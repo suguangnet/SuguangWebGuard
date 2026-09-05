@@ -1,0 +1,12 @@
+[Unit]
+Description=SuguangWebGuard realtime watcher (inotify)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -c '/www/SuguangWebGuard/watch.sh >> /www/SuguangWebGuard/logs/watch.log 2>&1'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

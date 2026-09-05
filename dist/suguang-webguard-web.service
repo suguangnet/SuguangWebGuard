@@ -1,0 +1,13 @@
+[Unit]
+Description=SuguangWebGuard web management UI
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /www/SuguangWebGuard/web/webui.py
+Restart=always
+RestartSec=5
+WorkingDirectory=/www/SuguangWebGuard
+
+[Install]
+WantedBy=multi-user.target

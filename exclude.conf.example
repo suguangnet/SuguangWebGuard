@@ -1,0 +1,31 @@
+# ============================================================
+# SuguangWebGuard 防篡改保护配置
+# 格式：SITE=<站点绝对路径>
+#       EXCLUDE=<相对站点根的路径>   ← 保持可写，不加锁
+#       PHPOK=<相对站点根的路径>     ← 允许程序在此生成 .php（监控白名单）
+# EXCLUDE/PHPOK 归属于其上方最近的 SITE。以 # 开头为注释。
+# 修改后需重新运行 lock.sh；改了 PHPOK 还需 systemctl restart suguang-webguard-watch
+#
+# 可用 ./detect.sh <站点路径> 自动探测该站点需要排除哪些目录。
+# ============================================================
+
+# ---- 示例：PbootCMS ----
+# SITE=/www/wwwroot/example.com
+# EXCLUDE=runtime
+# EXCLUDE=data
+# EXCLUDE=static/upload
+# EXCLUDE=static/backup
+# EXCLUDE=.well-known
+# PHPOK=runtime/complile
+# PHPOK=runtime/config
+# PHPOK=runtime/data
+# PHPOK=runtime/archive
+# PHPOK=static/backup
+
+# ---- 示例：帝国CMS ----
+# SITE=/www/wwwroot/example2.com
+# EXCLUDE=e/data
+# EXCLUDE=d/file
+# EXCLUDE=.well-known
+# EXCLUDE=生成静态页的目录
+# PHPOK=e/data/tmp

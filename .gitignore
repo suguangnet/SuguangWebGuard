@@ -1,0 +1,22 @@
+# 运行时生成的文件，不应进入版本库
+exclude.conf            # 站点配置由 install.sh 生成，模板见 exclude.conf.example
+exclude.conf.bak.*
+web.conf                # 含密码哈希
+web-initial-password.txt
+.maintenance
+aide.conf               # 由 aide-init.sh 自动生成
+aide.db.gz
+aide.db.new.gz
+logs/
+quarantine/
+
+# Python
+__pycache__/
+*.pyc
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

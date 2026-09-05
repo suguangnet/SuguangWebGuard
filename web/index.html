@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SuguangWebGuard 网站防篡改</title>
+<style>
+:root{
+  --bg:#0f1720; --panel:#16202b; --panel2:#1c2836; --line:#26374a;
+  --fg:#dce6f0; --dim:#8ba0b6; --acc:#3d9bff;
+  --ok:#31c48d; --warn:#f5a524; --bad:#f05252;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif}
+a{color:var(--acc)}
+.hide{display:none!important}
+
+/* 登录 */
+#login{max-width:360px;margin:12vh auto;padding:32px;background:var(--panel);
+  border:1px solid var(--line);border-radius:12px}
+#login h1{margin:0 0 4px;font-size:20px}
+#login p{margin:0 0 24px;color:var(--dim);font-size:13px}
+label{display:block;margin:14px 0 6px;font-size:13px;color:var(--dim)}
+input,textarea,select{width:100%;padding:10px 12px;background:var(--bg);color:var(--fg);
+  border:1px solid var(--line);border-radius:8px;font:inherit;outline:none}
+input:focus,textarea:focus{border-color:var(--acc)}
+button{padding:9px 16px;background:var(--acc);color:#fff;border:0;border-radius:8px;
+  font:inherit;cursor:pointer}
+button:hover{filter:brightness(1.1)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.gray{background:var(--panel2);color:var(--fg);border:1px solid var(--line)}
+button.warn{background:var(--warn);color:#241a00}
+button.bad{background:var(--bad)}
+button.sm{padding:5px 10px;font-size:12px}
+.msg{margin-top:14px;padding:10px 12px;border-radius:8px;font-size:13px}
+.msg.e{background:#3a1c1f;color:#ffb4b4;border:1px solid #6b2b2f}
+.msg.k{background:#12332a;color:#a5e8cd;border:1px solid #1f5c48}
+
+/* 布局 */
+header{display:flex;align-items:center;gap:14px;padding:12px 20px;
+  background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
+header h1{margin:0;font-size:16px;font-weight:600}
+header .sp{flex:1}
+header .host{color:var(--dim);font-size:12px}
+nav{display:flex;gap:4px;padding:0 20px;background:var(--panel);
+  border-bottom:1px solid var(--line);overflow-x:auto}
+nav button{background:none;color:var(--dim);border:0;border-bottom:2px solid transparent;
+  border-radius:0;padding:11px 14px;white-space:nowrap}
+nav button.on{color:var(--fg);border-bottom-color:var(--acc)}
+main{padding:20px;max-width:1200px;margin:0 auto}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:18px;margin-bottom:16px}
+.card h2{margin:0 0 14px;font-size:15px;font-weight:600}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.kv{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.kv .k{color:var(--dim);font-size:12px;margin-bottom:4px}
+.kv .v{font-size:18px;font-weight:600}
+.badge{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:600}
+.b-ok{background:#12332a;color:#5ee0ad}
+.b-warn{background:#3a2c10;color:#f7c164}
+.b-bad{background:#3a1c1f;color:#ff9b9b}
+.b-dim{background:var(--panel2);color:var(--dim)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--line);
+  vertical-align:middle}
+th{color:var(--dim);font-weight:500;font-size:12px}
+td.mono,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+pre{background:#0b1219;border:1px solid var(--line);border-radius:10px;padding:14px;
+  overflow:auto;max-height:60vh;font-size:12.5px;margin:0;white-space:pre-wrap;
+  word-break:break-all}
+textarea{min-height:340px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:12.5px;resize:vertical}
+.dim{color:var(--dim)}
+.small{font-size:12px}
+.tags span{display:inline-block;background:var(--panel2);border:1px solid var(--line);
+  border-radius:6px;padding:1px 8px;margin:2px 4px 2px 0;font-size:12px;color:var(--dim)}
+.bar{height:6px;background:var(--panel2);border-radius:99px;overflow:hidden;margin-top:8px}
+.bar i{display:block;height:100%;background:var(--ok)}
+#toast{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:99}
+#toast div{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--acc);
+  border-radius:8px;padding:11px 15px;font-size:13px;max-width:380px;box-shadow:0 6px 24px #0008}
+#toast div.e{border-left-color:var(--bad)}
+#toast div.k{border-left-color:var(--ok)}
+.modal{position:fixed;inset:0;background:#000a;display:flex;align-items:center;
+  justify-content:center;padding:20px;z-index:50}
+.modal .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:20px;max-width:780px;width:100%;max-height:86vh;overflow:auto}
+.modal h3{margin:0 0 12px;font-size:15px}
+</style>
+</head>
+<body>
+
+<div id="login">
+  <h1>SuguangWebGuard</h1>
+  <p>速光网络软件开发 · 网站防篡改系统</p>
+  <label>用户名</label>
+  <input id="lu" autocomplete="username" value="admin">
+  <label>密码</label>
+  <input id="lp" type="password" autocomplete="current-password">
+  <div style="margin-top:20px"><button id="lb" style="width:100%">登 录</button></div>
+  <div id="lmsg"></div>
+</div>
+
+<div id="app" class="hide">
+  <header>
+    <h1>SuguangWebGuard</h1>
+    <span class="host" id="host"></span>
+    <span class="sp"></span>
+    <span class="host" id="rtime"></span>
+    <button class="gray sm" id="refresh">刷新</button>
+    <button class="gray sm" id="pwbtn">改密码</button>
+    <button class="gray sm" id="out">退出</button>
+  </header>
+  <nav>
+    <button class="on" data-t="dash">总览</button>
+    <button data-t="quar">隔离区</button>
+    <button data-t="logs">日志</button>
+    <button data-t="conf">配置</button>
+    <button data-t="tools">工具</button>
+  </nav>
+  <main>
+    <section id="t-dash"></section>
+    <section id="t-quar" class="hide"></section>
+    <section id="t-logs" class="hide">
+      <div class="card">
+        <h2>日志</h2>
+        <div class="row" style="margin-bottom:12px">
+          <select id="ltype" style="width:auto">
+            <option value="alert">告警 alert.log</option>
+            <option value="action">操作记录 action.log</option>
+            <option value="aide">完整性报告 aide-report.log</option>
+            <option value="watch">守护输出 watch.log</option>
+            <option value="web">Web 界面 web.log</option>
+          </select>
+          <select id="llines" style="width:auto">
+            <option value="200">最近 200 行</option>
+            <option value="500">最近 500 行</option>
+            <option value="2000">最近 2000 行</option>
+          </select>
+          <button class="gray sm" id="lload">加载</button>
+        </div>
+        <pre id="lbox">—</pre>
+      </div>
+    </section>
+    <section id="t-conf" class="hide">
+      <div class="card">
+        <h2>exclude.conf</h2>
+        <p class="dim small">保存后会自动备份原文件。修改后需重新<b>加锁</b>；改了 PHPOK 还要<b>重启守护</b>。</p>
+        <textarea id="cbox" spellcheck="false"></textarea>
+        <div class="row" style="margin-top:12px">
+          <button id="csave">保存</button>
+          <button class="gray" id="creload">重新载入</button>
+        </div>
+      </div>
+    </section>
+    <section id="t-tools" class="hide">
+      <div class="card">
+        <h2>探测可写目录</h2>
+        <p class="dim small">分析目标站点近 N 天的写入行为，给出建议的 EXCLUDE / PHPOK 配置。
+          结果里 <code>#</code> 注释掉的是需要你人工确认的项。</p>
+        <div class="row">
+          <input id="dpath" placeholder="/www/wwwroot/example.com" style="flex:1;min-width:260px">
+          <select id="ddays" style="width:auto">
+            <option value="30">30 天</option>
+            <option value="90" selected>90 天</option>
+            <option value="180">180 天</option>
+          </select>
+          <button id="dgo">开始探测</button>
+        </div>
+        <pre id="dout" style="margin-top:14px">—</pre>
+      </div>
+      <div class="card">
+        <h2>AIDE 完整性</h2>
+        <div class="row">
+          <button class="gray" id="acheck">立即核查</button>
+          <button class="warn" id="ainit">重建基线</button>
+        </div>
+        <p class="dim small" style="margin:10px 0 0">
+          你主动修改过网站文件后要「重建基线」，否则次日核查会报变更。</p>
+        <pre id="aout" style="margin-top:14px">—</pre>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="toast"></div>
+
+<script>
+var CSRF='', TIMER=null;
+function $(s){return document.querySelector(s)}
+function el(t,c,h){var e=document.createElement(t); if(c)e.className=c; if(h!==undefined)e.innerHTML=h; return e}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function toast(m,k){var d=el('div',k||'',esc(m)); $('#toast').appendChild(d);
+  setTimeout(function(){d.remove()},k==='e'?7000:3500)}
+
+function api(path,opt){
+  opt=opt||{}; opt.headers=opt.headers||{};
+  opt.headers['Content-Type']='application/json';
+  if(CSRF)opt.headers['X-CSRF-Token']=CSRF;
+  if(opt.body&&typeof opt.body!=='string')opt.body=JSON.stringify(opt.body);
+  return fetch(path,opt).then(function(r){return r.json().then(function(j){
+    if(r.status===401&&j.need_login){showLogin();throw new Error('未登录')}
+    return j})})
+}
+
+/* ---------- 登录 ---------- */
+function showLogin(){$('#login').classList.remove('hide');$('#app').classList.add('hide');
+  if(TIMER){clearInterval(TIMER);TIMER=null}}
+function showApp(){$('#login').classList.add('hide');$('#app').classList.remove('hide');
+  load(); if(!TIMER)TIMER=setInterval(function(){load(true)},20000)}
+
+$('#lb').onclick=function(){
+  var b=$('#lb'); b.disabled=true; $('#lmsg').innerHTML='';
+  api('/api/login',{method:'POST',body:{user:$('#lu').value,pass:$('#lp').value}})
+  .then(function(j){ b.disabled=false;
+    if(j.ok){CSRF=j.csrf; $('#lp').value=''; showApp()}
+    else $('#lmsg').innerHTML='<div class="msg e">'+esc(j.msg)+'</div>'})
+  .catch(function(){b.disabled=false})
+}
+$('#lp').addEventListener('keydown',function(e){if(e.key==='Enter')$('#lb').click()})
+$('#out').onclick=function(){api('/api/logout',{method:'POST'}).then(function(){CSRF='';showLogin()})}
+
+/* ---------- 导航 ---------- */
+document.querySelectorAll('nav button').forEach(function(b){
+  b.onclick=function(){
+    document.querySelectorAll('nav button').forEach(function(x){x.classList.remove('on')});
+    b.classList.add('on');
+    ['dash','quar','logs','conf','tools'].forEach(function(t){
+      $('#t-'+t).classList.toggle('hide',t!==b.dataset.t)});
+    if(b.dataset.t==='conf')loadConf();
+    if(b.dataset.t==='logs')loadLog();
+  }
+})
+
+/* ---------- 总览 ---------- */
+function stBadge(s){
+  if(s==='protected')return '<span class="badge b-ok">已保护</span>';
+  if(s==='partial')return '<span class="badge b-warn">部分保护</span>';
+  if(s==='unprotected')return '<span class="badge b-bad">未保护</span>';
+  return '<span class="badge b-dim">未知</span>'
+}
+function load(silent){
+  api('/api/status').then(function(j){
+    if(!j.ok)return;
+    var d=j.data;
+    $('#host').textContent=d.host;
+    $('#rtime').textContent='更新于 '+d.time;
+    renderDash(d); renderQuar(d);
+  }).catch(function(){})
+}
+function renderDash(d){
+  var h='';
+  h+='<div class="card"><h2>系统</h2><div class="grid">';
+  h+='<div class="kv"><div class="k">实时监控守护</div><div class="v">'+
+     (d.watch_active?'<span class="badge b-ok">运行中</span>':'<span class="badge b-bad">未运行</span>')+'</div></div>';
+  h+='<div class="kv"><div class="k">维护模式</div><div class="v">'+
+     (d.maintenance?'<span class="badge b-warn">已开启（不隔离）</span>':'<span class="badge b-ok">关闭</span>')+'</div></div>';
+  h+='<div class="kv"><div class="k">隔离区文件</div><div class="v">'+d.quarantine.length+'</div></div>';
+  h+='<div class="kv"><div class="k">AIDE 基线</div><div class="v small" style="font-weight:400">'+
+     (d.aide_baseline?esc(d.aide_baseline):'<span class="dim">未建立</span>')+'</div></div>';
+  h+='</div><div class="row" style="margin-top:14px">';
+  h+='<button class="gray" onclick="act(\'restart_watch\')">重启守护</button>';
+  h+=d.watch_active?'<button class="gray" onclick="act(\'stop_watch\')">停止守护</button>'
+                   :'<button onclick="act(\'start_watch\')">启动守护</button>';
+  h+='<span class="sp" style="flex:1"></span>';
+  h+='<button class="warn" onclick="act(\'unlock\')">全部解锁</button>';
+  h+='<button onclick="act(\'lock\')">全部加锁</button>';
+  h+='</div></div>';
+
+  d.sites.forEach(function(s){
+    var pct=s.total?Math.round(s.locked*100/s.total):0;
+    h+='<div class="card"><h2>'+esc(s.site)+' '+stBadge(s.state)+'</h2>';
+    if(!s.exists){h+='<p class="dim">目录不存在</p></div>';return}
+    h+='<div class="grid">';
+    h+='<div class="kv"><div class="k">应锁文件</div><div class="v">'+s.total+'</div></div>';
+    h+='<div class="kv"><div class="k">已锁文件</div><div class="v">'+s.locked+'</div>'+
+       '<div class="bar"><i style="width:'+pct+'%"></i></div></div>';
+    h+='</div>';
+    h+='<div style="margin-top:12px"><div class="k dim small">保持可写的目录</div><div class="tags">'+
+       (s.excludes.length?s.excludes.map(function(x){return '<span>'+esc(x)+'</span>'}).join(''):'<span class="dim">无</span>')+'</div></div>';
+    h+='<div style="margin-top:8px"><div class="k dim small">允许生成 .php（监控白名单）</div><div class="tags">'+
+       (s.phpok.length?s.phpok.map(function(x){return '<span>'+esc(x)+'</span>'}).join(''):'<span class="dim">无</span>')+'</div></div>';
+    h+='<div class="row" style="margin-top:14px">';
+    h+='<button class="warn sm" onclick="act(\'unlock\',\''+esc(s.site)+'\')">解锁本站</button>';
+    h+='<button class="sm" onclick="act(\'lock\',\''+esc(s.site)+'\')">加锁本站</button>';
+    h+='</div></div>';
+  });
+  if(!d.sites.length)h+='<div class="card"><p class="dim">exclude.conf 中没有配置任何站点。</p></div>';
+  $('#t-dash').innerHTML=h;
+}
+
+/* ---------- 隔离区 ---------- */
+function renderQuar(d){
+  var h='<div class="card"><h2>隔离区 <span class="dim small">'+
+        d.quarantine.length+' 个文件</span></h2>';
+  h+='<p class="dim small">监控守护拦下的新增脚本文件。误杀了可以直接恢复到原路径（会自动加锁）。'+
+     '原路径见告警日志。</p>';
+  if(!d.quarantine.length){h+='<p class="dim">暂无</p></div>';$('#t-quar').innerHTML=h;return}
+  h+='<table><tr><th>文件</th><th>大小</th><th>隔离时间</th><th style="width:190px">操作</th></tr>';
+  d.quarantine.forEach(function(q){
+    h+='<tr><td class="mono">'+esc(q.name)+'</td><td>'+q.size+' B</td><td class="dim">'+esc(q.time)+'</td><td>'+
+       '<button class="gray sm" onclick="qview(\''+esc(q.name)+'\')">查看</button> '+
+       '<button class="gray sm" onclick="qrestore(\''+esc(q.name)+'\')">恢复</button> '+
+       '<button class="bad sm" onclick="qdel(\''+esc(q.name)+'\')">删除</button></td></tr>';
+  });
+  h+='</table></div>';
+  $('#t-quar').innerHTML=h;
+}
+function qview(n){
+  api('/api/quarantine/view?name='+encodeURIComponent(n)).then(function(j){
+    if(!j.ok)return toast(j.msg,'e');
+    modal('隔离文件内容 · '+n,'<pre>'+esc(j.text)+'</pre>')})
+}
+function qrestore(n){
+  var guess=n.replace(/^\d{8}-\d{6}-\d+-/,'');
+  modal('恢复隔离文件','<p class="dim small">恢复过程会临时停止监控守护，写回后自动加 <code>chattr +i</code> 并重启守护。'+
+    '目标路径必须在 <code>/www/</code> 下。</p>'+
+    '<label>原文件完整路径</label><input id="rdest" value="/www/wwwroot/'+esc(guess)+'">'+
+    '<div class="row" style="margin-top:16px"><button id="rgo">确认恢复</button>'+
+    '<button class="gray" onclick="closeModal()">取消</button></div>',
+    function(){
+      $('#rgo').onclick=function(){
+        var dest=$('#rdest').value.trim(); $('#rgo').disabled=true;
+        api('/api/quarantine/restore',{method:'POST',body:{name:n,dest:dest}}).then(function(j){
+          $('#rgo').disabled=false;
+          if(j.ok){toast(j.msg,'k');closeModal();load()}else toast(j.msg,'e')})
+      }
+    })
+}
+function qdel(n){
+  modal('删除隔离文件','<p>确定永久删除 <code class="mono">'+esc(n)+'</code>？此操作不可撤销。</p>'+
+    '<div class="row" style="margin-top:16px"><button class="bad" id="dgo2">确认删除</button>'+
+    '<button class="gray" onclick="closeModal()">取消</button></div>',
+    function(){$('#dgo2').onclick=function(){
+      api('/api/quarantine/delete',{method:'POST',body:{name:n}}).then(function(j){
+        if(j.ok){toast('已删除','k');closeModal();load()}else toast(j.msg,'e')})}})
+}
+
+/* ---------- 操作 / 任务 ---------- */
+function act(op,site,extra){
+  var body={op:op,site:site||''};
+  if(extra)for(var k in extra)body[k]=extra[k];
+  return api('/api/action',{method:'POST',body:body}).then(function(j){
+    if(!j.ok){toast(j.msg,'e');return null}
+    toast('已提交，执行中…');
+    return poll(j.job)})
+}
+function poll(jid,box){
+  return new Promise(function(res){
+    var t=setInterval(function(){
+      api('/api/job/'+jid).then(function(j){
+        if(!j.ok)return;
+        if(box)box.textContent=j.job.name+' 执行中…';
+        if(j.job.state==='done'){
+          clearInterval(t);
+          if(box)box.textContent=j.job.out||'(无输出)';
+          toast(j.job.name+(j.job.rc===0?' 完成':' 结束(退出码 '+j.job.rc+')'),
+                j.job.rc===0?'k':'e');
+          load(); res(j.job)}
+      }).catch(function(){clearInterval(t);res(null)})
+    },1500)
+  })
+}
+
+/* ---------- 日志 ---------- */
+function loadLog(){
+  api('/api/logs?type='+$('#ltype').value+'&lines='+$('#llines').value).then(function(j){
+    $('#lbox').textContent=j.ok?(j.text||'(空)'):j.msg})
+}
+$('#lload').onclick=loadLog; $('#ltype').onchange=loadLog; $('#llines').onchange=loadLog;
+
+/* ---------- 配置 ---------- */
+function loadConf(){api('/api/config').then(function(j){if(j.ok)$('#cbox').value=j.text})}
+$('#creload').onclick=loadConf;
+$('#csave').onclick=function(){
+  $('#csave').disabled=true;
+  api('/api/config',{method:'POST',body:{text:$('#cbox').value}}).then(function(j){
+    $('#csave').disabled=false;
+    if(j.ok){toast('已保存，原文件备份为 '+j.backup,'k');load()}else toast(j.msg,'e')})
+}
+
+/* ---------- 工具 ---------- */
+$('#dgo').onclick=function(){
+  var p=$('#dpath').value.trim(); if(!p)return toast('请填目录','e');
+  $('#dout').textContent='探测中…';
+  act('detect','',{path:p,days:$('#ddays').value}).then(function(job){
+    if(job)$('#dout').textContent=job.out||'(无输出)'})
+}
+$('#acheck').onclick=function(){$('#aout').textContent='核查中…';
+  act('aide_check').then(function(j){if(j)$('#aout').textContent=j.out||'(完成，详见 aide-report.log)'})}
+$('#ainit').onclick=function(){$('#aout').textContent='重建基线中，可能需要几分钟…';
+  act('aide_init').then(function(j){if(j)$('#aout').textContent=j.out||''})}
+$('#refresh').onclick=function(){load()};
+
+/* ---------- 改密码 ---------- */
+$('#pwbtn').onclick=function(){
+  modal('修改管理密码',
+    '<label>原密码</label><input id="p0" type="password">'+
+    '<label>新密码（至少 8 位）</label><input id="p1" type="password">'+
+    '<div class="row" style="margin-top:16px"><button id="pgo">确认修改</button>'+
+    '<button class="gray" onclick="closeModal()">取消</button></div>',
+    function(){$('#pgo').onclick=function(){
+      api('/api/password',{method:'POST',body:{old:$('#p0').value,new:$('#p1').value}})
+      .then(function(j){if(j.ok){toast('密码已修改','k');closeModal()}else toast(j.msg,'e')})}})
+}
+
+/* ---------- 弹窗 ---------- */
+function modal(title,html,after){
+  closeModal();
+  var m=el('div','modal');
+  m.innerHTML='<div class="box"><h3>'+esc(title)+'</h3>'+html+'</div>';
+  m.onclick=function(e){if(e.target===m)closeModal()};
+  document.body.appendChild(m); if(after)after();
+}
+function closeModal(){var m=document.querySelector('.modal'); if(m)m.remove()}
+
+/* ---------- 启动 ---------- */
+api('/api/whoami').then(function(j){
+  if(j.ok&&j.login){CSRF=j.csrf;showApp()}else showLogin()
+}).catch(showLogin)
+</script>
+</body>
+</html>
