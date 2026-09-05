@@ -31,7 +31,7 @@ LOGROT=/etc/logrotate.d/suguang-webguard
 WEBCONF=$PREFIX/web.conf
 SRC="$(cd "$(dirname "$0")" && pwd)"
 
-DO_LOCK=0; DO_AIDE=1; DO_WEB=1; ASSUME_YES=0; DAYS=90; WEBPORT=19196
+DO_LOCK=0; DO_AIDE=1; DO_WEB=1; ASSUME_YES=0; DAYS=90; WEBPORT=19196; PORT_SET=0
 SITES=()
 
 red(){ printf '\033[31m%s\033[0m\n' "$*"; }
@@ -46,7 +46,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --site) shift; [ $# -gt 0 ] || die "--site 需要参数"; SITES+=("${1%/}");;
     --days) shift; DAYS="$1";;
-    --port) shift; WEBPORT="$1";;
+    --port) shift; WEBPORT="$1"; PORT_SET=1;;
     --lock) DO_LOCK=1;;
     --no-web) DO_WEB=0;;
     --no-aide) DO_AIDE=0;;
@@ -91,7 +91,7 @@ else
   ylw "  /tmp 不支持 immutable（可能是 tmpfs），将在站点目录上验证"
 fi
 
-NEED="common.sh lock.sh unlock.sh status.sh watch.sh aide-init.sh aide-check.sh"
+NEED="common.sh lock.sh unlock.sh status.sh watch.sh detect.sh aide-init.sh aide-check.sh"
 for f in $NEED; do
   [ -f "$SRC/$f" ] || die "源目录缺少 $f，请确认解压完整"
 done
@@ -198,7 +198,7 @@ step "4/9 安装程序文件"
 if [ "$SRC" = "$PREFIX" ]; then
   ylw "  源目录即安装目录，跳过复制（原地重装）"
 else
-  for f in $NEED detect.sh uninstall.sh install.sh README.md exclude.conf.example; do
+  for f in $NEED uninstall.sh install.sh README.md exclude.conf.example LICENSE; do
     [ -f "$SRC/$f" ] && cp -f "$SRC/$f" "$PREFIX/"
   done
   if [ "$DO_WEB" = "1" ]; then
@@ -294,15 +294,24 @@ if [ "$DO_WEB" != "1" ]; then
   systemctl disable --now suguang-webguard-web >/dev/null 2>&1
 else
   if [ -f "$WEBCONF" ]; then
-    "$PY" - "$WEBCONF" "$WEBPORT" <<'PYEOF'
+    # 重装时保留已有配置。只有显式传了 --port 才改端口，
+    # 否则会把用户设好的端口悄悄改回默认值，可能撞上别的服务。
+    "$PY" - "$WEBCONF" "$WEBPORT" "$PORT_SET" <<'PYEOF'
 import json,sys
-p,port=sys.argv[1],int(sys.argv[2])
+p,port,forced=sys.argv[1],int(sys.argv[2]),sys.argv[3]=='1'
 try: c=json.load(open(p))
 except Exception: c={}
-c['port']=port
+if forced or not c.get('port'):
+    c['port']=port
 json.dump(c,open(p,'w'),indent=2,ensure_ascii=False)
+print(c.get('port'))
 PYEOF
-    ylw "  已存在 web.conf，保留原有账号密码，端口设为 $WEBPORT"
+    WEBPORT=$("$PY" -c "import json;print(json.load(open('$WEBCONF'))['port'])")
+    if [ "$PORT_SET" = "1" ]; then
+      ylw "  已存在 web.conf，保留原有账号密码，端口按 --port 改为 $WEBPORT"
+    else
+      ylw "  已存在 web.conf，保留原有账号密码与端口 $WEBPORT（如需改端口请加 --port）"
+    fi
   else
     "$PY" - "$WEBCONF" "$WEBPORT" <<'PYEOF'
 import json,sys

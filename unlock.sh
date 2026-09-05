@@ -7,7 +7,7 @@ TARGETS=$( [ -n "$1" ] && echo "$1" || get_sites )
 [ -z "$TARGETS" ] && { echo "exclude.conf 中没有配置任何 SITE"; exit 1; }
 
 touch /www/SuguangWebGuard/.maintenance
-echo "[维护模式] 已开启：监控守护在解锁期间只记录、不隔离文件。"
+[ "${SWG_FROM_UNINSTALL:-0}" = "1" ] || echo "[维护模式] 已开启：监控守护在解锁期间只记录、不隔离文件。"
 
 for site in $TARGETS; do
   [ -d "$site" ] || { echo "跳过（目录不存在）: $site"; continue; }
@@ -18,5 +18,7 @@ for site in $TARGETS; do
   echo "  剩余 +i 文件: $left 个（应为 0）"
   echo "$(ts) UNLOCK $site left=$left" >> /www/SuguangWebGuard/logs/action.log
 done
-echo
-echo "改完后务必运行: /www/SuguangWebGuard/lock.sh   （会自动退出维护模式）"
+if [ "${SWG_FROM_UNINSTALL:-0}" != "1" ]; then
+  echo
+  echo "改完后务必运行: /www/SuguangWebGuard/lock.sh   （会自动退出维护模式）"
+fi

@@ -23,6 +23,7 @@ iGuard 等）的核心防护能力，并附带一套 Web 管理界面。
 - [能力边界](#能力边界)
 - [安装](#安装)
 - [目录结构](#目录结构)
+- [文件清单](#文件清单)
 - [快速上手](#快速上手)
 - [配置说明](#配置说明)
 - [维护模式](#维护模式)
@@ -326,6 +327,105 @@ tail -3 /www/SuguangWebGuard/logs/alert.log
   即使某个站点被 RCE 也读不到本目录
 
 > 部署到新服务器时，建议用 `install.sh` 第 1 步的检查结果确认这几条同样成立。
+
+---
+
+## 文件清单
+
+安装涉及的文件分三类，外加两处系统改动。
+
+### 一、安装包必需文件
+
+`install.sh` 第 1 步会逐个校验下表中标注为**必需**的文件，少任何一个直接退出。
+
+| 文件 | 大致大小 | 必需 | 作用 |
+|---|---|---|---|
+| `install.sh` | 15 K | 必需 | 安装脚本，入口 |
+| `uninstall.sh` | 4 K | 建议 | 卸载脚本。缺失时装得上，但以后只能手工卸载 |
+| `common.sh` | 3 K | 必需 | 公共库：配置解析、find 排除表达式、AIDE 配置生成 |
+| `watch.sh` | 3 K | 必需 | 实时监控守护主体（inotify + 定期扫描） |
+| `lock.sh` | 1 K | 必需 | 加锁 |
+| `unlock.sh` | 1 K | 必需 | 解锁（并进入维护模式） |
+| `status.sh` | 1 K | 必需 | 状态查看 |
+| `detect.sh` | 5 K | 必需 | 探测站点需要保持可写的目录，`--site` 依赖它 |
+| `aide-init.sh` | 1 K | 必需 | 建立 / 重建完整性基线 |
+| `aide-check.sh` | 1 K | 必需 | 每日核查（由 cron 调用） |
+| `exclude.conf.example` | 1 K | 可选 | 配置模板，不带 `--site` 安装时用作初始配置 |
+| `README.md` | 33 K | 可选 | 本文档，会被复制到安装目录 |
+| `LICENSE` | 1 K | 可选 | MIT 许可证 |
+| `web/webui.py` | 24 K | 必需* | Web 管理界面后端 |
+| `web/index.html` | 21 K | 必需* | Web 管理界面前端 |
+| `dist/suguang-webguard-watch.service` | 271 B | 必需 | 守护服务单元模板 |
+| `dist/suguang-webguard-web.service` | 262 B | 必需* | Web 服务单元模板 |
+| `dist/cron.suguang-webguard` | 142 B | 必需 | 定时任务模板 |
+| `dist/logrotate.suguang-webguard` | 147 B | 必需 | 日志轮转模板 |
+
+标 **必需\*** 的三个文件只在安装 Web 管理界面时校验，加 `--no-web` 可跳过；
+同理 `--no-aide` 会跳过 AIDE 相关步骤，但 `aide-init.sh` / `aide-check.sh` 仍需存在。
+
+仓库里还有 `.gitattributes` 和 `.gitignore`，仅供版本控制使用，**安装不需要**。
+
+> `.gitattributes` 对所有脚本强制 `eol=lf`。如果你不是用 git 克隆而是手工下载 zip
+> 再上传，务必确认脚本没被转成 CRLF，否则会报
+> `bad interpreter: /bin/bash^M`。`install.sh` 复制文件时也会做一次 `sed 's/\r$//'` 兜底。
+
+### 二、安装后生成的文件
+
+程序文件会被复制到 `/www/SuguangWebGuard`，此外**新产生**下列内容：
+
+| 文件 / 目录 | 权限 | 说明 |
+|---|---|---|
+| `exclude.conf` | 644 | 站点配置，由 `detect.sh` 探测生成 ← **唯一需要你维护的文件** |
+| `web.conf` | 600 | Web 界面配置：端口、账号、PBKDF2 密码哈希 |
+| `web-initial-password.txt` | 600 | 初始密码，改密后可删除 |
+| `aide.conf` | 600 | AIDE 配置，由 `aide-init.sh` 从 `exclude.conf` 自动生成，**勿手改** |
+| `aide.db.gz` | 600 | 完整性基线库 |
+| `logs/` | 700 | `alert.log` `action.log` `aide-report.log` `watch.log` `web.log` |
+| `quarantine/` | 700 | 隔离区，存放被拦下的脚本文件 |
+| `.maintenance` | 644 | 维护模式标记，解锁时出现、加锁时消失 |
+
+整个 `/www/SuguangWebGuard` 目录权限为 **700**，`www` 用户连读都不行 ——
+隔离区里存的是真实 webshell，这一点很关键。
+
+### 三、系统集成文件
+
+只有下面 4 个文件在 `/etc` 下，因为 systemd、cron、logrotate 只认各自的固定目录。
+它们内容都只有几行，全部指向 `/www/SuguangWebGuard`：
+
+| 文件 | 用途 |
+|---|---|
+| `/etc/systemd/system/suguang-webguard-watch.service` | 实时监控守护服务 |
+| `/etc/systemd/system/suguang-webguard-web.service` | Web 管理界面服务 |
+| `/etc/cron.d/suguang-webguard` | 每日 04:17 完整性核查 |
+| `/etc/logrotate.d/suguang-webguard` | 日志轮转（每周，保留 12 份） |
+
+### 四、对系统的其他改动（不是文件）
+
+**1. 安装了三个依赖包**
+
+| 包 | 用途 | 来源 |
+|---|---|---|
+| `inotify-tools` | 实时监控 | EPEL |
+| `aide` | 完整性核查（`--no-aide` 可跳过） | base / updates |
+| `python3` | Web 管理界面（`--no-web` 可跳过） | base / updates |
+
+卸载脚本**不会**自动移除它们，因为可能有其他程序依赖。需要时手工
+`yum remove -y aide inotify-tools`。
+
+**2. 给站点文件打了 `chattr +i` 属性**
+
+这不是文件，是打在文件 inode 上的标志位。所以移动程序目录、甚至卸载重装都不影响它，
+但**卸载前必须先解锁**，否则那些文件会永久锁死（`uninstall.sh` 会自动处理这一步）。
+
+### 备份建议
+
+**只需打包 `/www/SuguangWebGuard` 一个目录**，程序、配置、日志、基线、隔离区全在里面：
+
+```bash
+tar czf swg-backup-$(date +%Y%m%d).tar.gz -C /www SuguangWebGuard
+```
+
+`/etc` 下那 4 个文件不用备份，重新执行 `install.sh` 会自动重建。
 
 ---
 
