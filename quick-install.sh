@@ -87,7 +87,11 @@ command -v tar >/dev/null 2>&1 || die "需要 tar"
 grn "  下载工具: $DL；tar 可用"
 
 # 非交互环境下 install.sh 的确认提示会失败，提前提醒
-if [ ! -t 1 ] && ! printf '%s\n' "${PASS_ARGS[@]:-}" | grep -qx -- '--yes'; then
+HAS_YES=0
+for a in "${PASS_ARGS[@]:-}"; do
+  case "$a" in --yes|-y) HAS_YES=1;; esac
+done
+if [ ! -t 1 ] && [ "$HAS_YES" = "0" ]; then
   ylw "  当前不是交互终端。若安装过程需要确认会失败，建议加 --yes"
 fi
 
