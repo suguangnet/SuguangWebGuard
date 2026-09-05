@@ -792,6 +792,36 @@ tail -50 /www/SuguangWebGuard/logs/watch.log
 systemctl restart suguang-webguard-watch
 ```
 
+### 告警日志里出现「inotify 监视数不足」
+
+内核为**每个被监视的目录**占用一个 inotify watch，而 `fs.inotify.max_user_watches`
+默认只有 **8192**。站点目录上万时（多站点服务器很容易超），`inotifywait` 会直接
+启动失败，实时监控起不来。
+
+先看差多少：
+
+```bash
+cat /proc/sys/fs/inotify/max_user_watches      # 当前上限
+find /www/wwwroot -type d | wc -l              # 实际需要的数量
+```
+
+`install.sh` 会自动把上限抬到 524288。若是手工部署或容器环境没生效，手动执行：
+
+```bash
+cat > /etc/sysctl.d/99-suguang-webguard.conf <<'EOF'
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 512
+EOF
+sysctl -p /etc/sysctl.d/99-suguang-webguard.conf
+systemctl restart suguang-webguard-watch
+```
+
+watch 是按需分配的，抬高上限本身不占内存（满配约 1KB/watch）。
+
+**这种情况下防护不会中断**：实时监控起不来时守护会自动降级，保留每 60 秒的
+全量扫描继续拦截，并每 5 分钟重试恢复实时监控。降级只是把响应延迟从毫秒级
+变成约 1 分钟，日志里会明确写出当前处于降级状态。
+
 ### AIDE 每天都报变更
 
 说明保护范围内有文件在持续变动，两种可能：

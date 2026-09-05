@@ -186,6 +186,29 @@ if [ "$DO_AIDE" = "1" ]; then
   grn "  aide: $($AIDEBIN --version 2>&1 | head -1)"
 fi
 
+# inotify 监视数上限。内核对每个被监视的目录占用一个 watch，默认上限仅 8192，
+# 站点目录上万时 inotifywait 会直接启动失败。必须在这里抬上去，否则实时监控起不来。
+# watch 是按需分配的，抬高上限本身不占内存（满配约 1KB/watch）。
+WANT_WATCHES=524288
+CUR_WATCHES=$(cat /proc/sys/fs/inotify/max_user_watches 2>/dev/null || echo 0)
+if [ "$CUR_WATCHES" -lt "$WANT_WATCHES" ]; then
+  cat > /etc/sysctl.d/99-suguang-webguard.conf <<SYSCTL
+# SuguangWebGuard 实时监控所需，见 watch.sh
+fs.inotify.max_user_watches = $WANT_WATCHES
+fs.inotify.max_user_instances = 512
+SYSCTL
+  sysctl -p /etc/sysctl.d/99-suguang-webguard.conf >/dev/null 2>&1
+  NOW_WATCHES=$(cat /proc/sys/fs/inotify/max_user_watches 2>/dev/null || echo 0)
+  if [ "$NOW_WATCHES" -ge "$WANT_WATCHES" ]; then
+    grn "  inotify 监视数上限: $CUR_WATCHES -> $NOW_WATCHES（已写入 /etc/sysctl.d/99-suguang-webguard.conf，重启保持）"
+  else
+    ylw "  inotify 监视数上限调整失败（当前 $NOW_WATCHES）。容器环境可能不允许改 sysctl，"
+    ylw "  实时监控会降级为定期扫描，防护仍有效但延迟变大。"
+  fi
+else
+  grn "  inotify 监视数上限: $CUR_WATCHES（已满足，不改动）"
+fi
+
 # ---------- 3. 创建目录 ----------
 step "3/9 创建目录"
 mkdir -p "$PREFIX/quarantine" "$PREFIX/web" "$LOGDIR"
