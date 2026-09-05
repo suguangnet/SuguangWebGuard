@@ -177,7 +177,7 @@ cd /root && tar xzf SuguangWebGuard.tar.gz && cd SuguangWebGuard
 ```
 install.sh  uninstall.sh  detect.sh  common.sh
 lock.sh  unlock.sh  status.sh  watch.sh
-aide-init.sh  aide-check.sh  exclude.conf.example  README.md
+aide-init.sh  aide-check.sh  reset-password.sh  exclude.conf.example  README.md
 dist/suguang-webguard-watch.service
 dist/suguang-webguard-web.service
 dist/cron.suguang-webguard
@@ -316,6 +316,7 @@ tail -3 /www/SuguangWebGuard/logs/alert.log
 ├── watch.sh            实时监控守护主体
 ├── aide-init.sh        建立/重建 AIDE 基线
 ├── aide-check.sh       AIDE 核查（由 cron 调用）
+├── reset-password.sh   重置 Web 管理密码（忘记密码时用）
 ├── README.md           本文件
 │
 ├── web/
@@ -379,6 +380,7 @@ tail -3 /www/SuguangWebGuard/logs/alert.log
 | `detect.sh` | 5 K | 必需 | 探测站点需要保持可写的目录，`--site` 依赖它 |
 | `aide-init.sh` | 1 K | 必需 | 建立 / 重建完整性基线 |
 | `aide-check.sh` | 1 K | 必需 | 每日核查（由 cron 调用） |
+| `reset-password.sh` | 2 K | 必需 | 重置 Web 管理密码，忘记密码时的唯一入口 |
 | `exclude.conf.example` | 1 K | 可选 | 配置模板，不带 `--site` 安装时用作初始配置 |
 | `README.md` | 33 K | 可选 | 本文档，会被复制到安装目录 |
 | `LICENSE` | 1 K | 可选 | MIT 许可证 |
@@ -704,7 +706,8 @@ ssh -L 19196:127.0.0.1:19196 root@服务器IP -N
   "user": "admin",
   "salt": "...",
   "pwhash": "...",
-  "allow_cidr": []
+  "allow_cidr": [],
+  "sess_epoch": 0
 }
 ```
 
@@ -714,7 +717,40 @@ ssh -L 19196:127.0.0.1:19196 root@服务器IP -N
 systemctl restart suguang-webguard-web
 ```
 
-忘记密码时，删掉 `pwhash` 字段再重启服务，会重新生成随机密码。
+`sess_epoch` 是会话世代号，每重置一次密码就加一，用来让已签发的登录会话
+立即作废。不要手工改动。
+
+### 重置密码
+
+两条路径，按「登不登得进去」选：
+
+**一、还能登录 —— 界面右上角「重置密码」**
+
+系统随机生成一个新密码并当场显示（只显示这一次）。不需要提供原密码；
+重置后除当前浏览器外的所有会话都会被注销。
+
+想自己指定密码就用旁边的「改密码」，那个要验原密码。
+
+**二、登不进去了 —— 命令行脚本**
+
+Web 界面上的按钮要先登录才能用，忘记密码时只剩这一条路：
+
+```bash
+cd /www/SuguangWebGuard
+
+./reset-password.sh                    # 随机生成一个新密码
+./reset-password.sh 你的新密码          # 指定密码（至少 8 位）
+./reset-password.sh --user newadmin    # 顺便改用户名
+./reset-password.sh --keep-sessions    # 保留已登录会话（默认全部注销）
+```
+
+新密码会同时写入 `/www/SuguangWebGuard/web-initial-password.txt`
+（`0600`，仅 root 可读，抄走后可删除）。
+
+**不需要重启服务**——服务端会在下次请求时发现 `web.conf` 变动并自动重载。
+
+生成的随机密码刻意去掉了 `0 O o 1 l I` 这些肉眼难分的字符，省得手抄时
+纠结「是大写 I 还是数字 1」。
 
 ### 常用命令
 

@@ -168,15 +168,17 @@ EXTRACTED="$TMP/$TOP"
 [ -d "$EXTRACTED" ] || die "解压结果异常，未找到 $TOP"
 
 NEED_FILES="install.sh uninstall.sh common.sh lock.sh unlock.sh status.sh watch.sh
-detect.sh aide-init.sh aide-check.sh web/webui.py web/index.html
+detect.sh aide-init.sh aide-check.sh reset-password.sh web/webui.py web/index.html
 dist/suguang-webguard-watch.service dist/suguang-webguard-web.service
 dist/cron.suguang-webguard dist/logrotate.suguang-webguard"
 MISSING=0
+NEED_N=0
 for f in $NEED_FILES; do
+  NEED_N=$((NEED_N + 1))
   [ -f "$EXTRACTED/$f" ] || { red "  缺少 $f"; MISSING=1; }
 done
 [ "$MISSING" = "0" ] || die "下载内容不完整，可能是传输被截断或镜像返回了错误内容"
-grn "  16 个关键文件齐全"
+grn "  $NEED_N 个关键文件齐全"
 
 # 统一换行符并赋可执行权限（防止经某些镜像/中转后变成 CRLF）
 find "$EXTRACTED" -type f \( -name '*.sh' -o -name '*.py' -o -name '*.service' \

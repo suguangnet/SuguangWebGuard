@@ -111,6 +111,11 @@ DEFAULT_CONF = {
     'salt': '',
     'pwhash': '',
     'allow_cidr': [],
+    # 会话世代。递增一次即让此前签发的所有会话失效。
+    # 之所以放在 web.conf 而不是内存里：reset-password.sh 是独立进程，
+    # 它清空 sessions.json 清不掉服务进程内存中的会话表——实测旧 cookie
+    # 在脚本重置密码后依然能用。写进配置文件，服务端按 mtime 重载即可跨进程生效。
+    'sess_epoch': 0,
 }
 
 
@@ -118,6 +123,39 @@ def hash_pw(pw, salt):
     return base64.b64encode(
         hashlib.pbkdf2_hmac('sha256', pw.encode('utf-8'), salt.encode('utf-8'), 120000)
     ).decode('ascii')
+
+
+# 刻意去掉 0 O o 1 l I 这些肉眼难分的字符。管理员多半要手抄或手输这串密码，
+# 少一次「大写 I 还是数字 1」的纠结，比多那点熵值有用。
+PW_ALPHABET = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+
+
+def gen_password(n=16):
+    return ''.join(secrets.choice(PW_ALPHABET) for _ in range(n))
+
+
+def set_password(pw):
+    """写入新密码（每次都换新 salt）"""
+    salt = secrets.token_hex(16)
+    CFG['salt'] = salt
+    CFG['pwhash'] = hash_pw(pw, salt)
+    save_conf(CFG)
+
+
+def save_password_file(pw):
+    """把新密码落到 web-initial-password.txt，便于在服务器上取回。
+    0600 且目录本身 700，只有 root 能读；界面上会提示抄走后可删。"""
+    p = os.path.join(PREFIX, 'web-initial-password.txt')
+    try:
+        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, ('user: %s\npass: %s\n生成于 %s\n'
+                          % (CFG.get('user', 'admin'), pw, now())).encode('utf-8'))
+        finally:
+            os.close(fd)
+        return p
+    except Exception:
+        return ''
 
 
 def load_conf():
@@ -132,12 +170,48 @@ def load_conf():
 
 
 def save_conf(c):
+    global _CONF_MTIME
     with open(CONF, 'w') as f:
         json.dump(c, f, indent=2, ensure_ascii=False)
     os.chmod(CONF, 0o600)
+    try:
+        _CONF_MTIME = os.path.getmtime(CONF)   # 自己写的不算外部变动
+    except (OSError, NameError):
+        pass
 
 
 CFG = load_conf()
+_CONF_MTIME = os.path.getmtime(CONF) if os.path.exists(CONF) else 0
+
+
+def refresh_conf():
+    """web.conf 被外部改动过就重新载入。
+
+    reset-password.sh 是在服务外面改的 web.conf，若不重载，跑着的进程仍然
+    拿内存里的旧哈希校验，脚本改完密码却要重启服务才生效——很容易被当成
+    「脚本没起作用」。登录时顺手比对 mtime 即可，代价可忽略。
+    """
+    global _CONF_MTIME
+    try:
+        m = os.path.getmtime(CONF)
+    except OSError:
+        return
+    if m == _CONF_MTIME:
+        return
+    _CONF_MTIME = m
+    fresh = load_conf()
+    # 就地更新，避免别处持有的 CFG 引用失效
+    for k in ('user', 'salt', 'pwhash', 'allow_cidr', 'sess_epoch'):
+        if k in fresh:
+            CFG[k] = fresh[k]
+    wlog('检测到 web.conf 变动，已重新载入')
+
+
+def bump_sess_epoch():
+    """让此前签发的所有会话立即失效（包括其他进程/其他浏览器持有的）"""
+    CFG['sess_epoch'] = int(CFG.get('sess_epoch', 0)) + 1
+    save_conf(CFG)
+    return CFG['sess_epoch']
 
 # ---------------------------------------------------------------- 会话
 
@@ -196,6 +270,7 @@ def new_session(ip, remember=False):
     ttl = SESSION_TTL_REMEMBER if remember else SESSION_TTL
     with SESS_LOCK:
         SESSIONS[sid] = {'ip': ip, 'ttl': ttl, 'exp': time.time() + ttl,
+                         'ep': int(CFG.get('sess_epoch', 0)),
                          'csrf': secrets.token_urlsafe(24)}
         _sess_save_locked()
     return sid
@@ -210,6 +285,11 @@ def get_session(sid):
             return None
         nowt = time.time()
         if s['exp'] < nowt:
+            SESSIONS.pop(sid, None)
+            _sess_save_locked()
+            return None
+        # 世代不匹配 = 签发之后有人重置过密码，这个会话作废
+        if int(s.get('ep', 0)) != int(CFG.get('sess_epoch', 0)):
             SESSIONS.pop(sid, None)
             _sess_save_locked()
             return None
@@ -426,6 +506,9 @@ class Handler(BaseHTTPRequestHandler):
         return self._cookies().get('at_sid')
 
     def _sess(self):
+        # 每次请求都比一下 web.conf 的 mtime（一次 stat，可忽略），
+        # 这样 reset-password.sh 在服务外面递增的会话世代能立刻生效。
+        refresh_conf()
         return get_session(self._sid())
 
     def _client_ip(self):
@@ -543,6 +626,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._quar_delete(s)
             if p == '/api/password':
                 return self._change_pw(s)
+            if p == '/api/password/reset':
+                return self._reset_pw(s)
             return self._err('Not Found', 404)
         except Exception as e:
             wlog('POST %s 异常: %s' % (self.path, traceback.format_exc()))
@@ -557,6 +642,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, data, ctype)
 
     def _login(self):
+        refresh_conf()          # 可能刚被 reset-password.sh 改过
         ip = self._client_ip()
         left = login_banned(ip)
         if left:
@@ -708,12 +794,33 @@ class Handler(BaseHTTPRequestHandler):
             return self._err('新密码至少 8 位')
         if not hmac.compare_digest(hash_pw(old, CFG.get('salt', '')), CFG.get('pwhash', '')):
             return self._err('原密码错误')
-        salt = secrets.token_hex(16)
-        CFG['salt'] = salt
-        CFG['pwhash'] = hash_pw(new, salt)
-        save_conf(CFG)
+        set_password(new)
         audit('修改管理密码 (ip=%s)' % self._client_ip())
         return self._json({'ok': True})
+
+    def _reset_pw(self, s):
+        """随机生成一个新密码。不校验原密码——本就是给「想不起来原密码」
+        或「怀疑密码泄露」用的。已登录会话即可操作，与面板其他写操作同级
+        （能解锁站点文件的权限，远大于改密码）。
+
+        重置后踢掉除当前之外的所有会话：既然是怀疑泄露才重置，就不该让
+        别人手里的旧会话继续有效。"""
+        pw = gen_password()
+        set_password(pw)
+        ep = bump_sess_epoch()          # 作废所有已签发会话
+        cur = self._sid()
+        with SESS_LOCK:
+            for sid in list(SESSIONS):
+                if sid == cur:
+                    SESSIONS[sid]['ep'] = ep    # 只把当前这个补盖新世代
+                else:
+                    SESSIONS.pop(sid, None)
+            _sess_save_locked()
+        path = save_password_file(pw)
+        # 审计只记事件，绝不记密码本身
+        audit('重置管理密码，已注销其他会话 (ip=%s)' % self._client_ip())
+        return self._json({'ok': True, 'pass': pw, 'user': CFG.get('user', 'admin'),
+                           'file': path})
 
 
 class Server(ThreadingMixIn, HTTPServer):
@@ -733,7 +840,78 @@ def ensure_password():
     return pw
 
 
+def cli_reset_password(argv):
+    """命令行重置密码。忘记密码时的唯一入口——Web 界面要先登录才能用。
+
+    用法: webui.py --reset-password [新密码] [--user 用户名] [--keep-sessions]
+    不给新密码就随机生成一个。
+    """
+    new = None
+    user = None
+    keep = False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == '--user':
+            i += 1
+            if i >= len(argv):
+                print('错误: --user 需要参数')
+                return 1
+            user = argv[i]
+        elif a == '--keep-sessions':
+            keep = True
+        elif a.startswith('-'):
+            print('错误: 未知参数 %s' % a)
+            return 1
+        elif new is None:
+            new = a
+        else:
+            print('错误: 多余参数 %s' % a)
+            return 1
+        i += 1
+
+    if new is not None and len(new) < 8:
+        print('错误: 密码至少 8 位')
+        return 1
+    generated = new is None
+    if generated:
+        new = gen_password()
+    if user:
+        CFG['user'] = user
+    set_password(new)
+
+    # 默认注销所有会话：忘记密码而重置，通常意味着不希望旧会话还留着。
+    # 递增世代号是关键——本进程清 SESSIONS 只影响自己，跑着的服务进程有
+    # 独立的内存副本，只有靠 web.conf 里的世代号才能让它一起作废。
+    if not keep:
+        bump_sess_epoch()
+        with SESS_LOCK:
+            SESSIONS.clear()
+            _sess_save_locked()
+
+    path = save_password_file(new)
+    print('=' * 56)
+    print(' SuguangWebGuard Web 管理密码已重置')
+    print(' 用户名: %s' % CFG.get('user', 'admin'))
+    print(' 密  码: %s' % new)
+    if not generated:
+        print(' （使用你指定的密码）')
+    print('=' * 56)
+    if path:
+        print('已写入 %s（0600，抄走后可删除）' % path)
+    print('所有登录会话%s' % ('已保留' if keep else '已注销，需要重新登录'))
+    print('运行中的服务会在下次登录时自动加载新密码，无需重启。')
+    audit('命令行重置管理密码 user=%s%s' % (CFG.get('user', 'admin'),
+                                           '' if keep else '，已注销所有会话'))
+    return 0
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == '--reset-password':
+        os.makedirs(LOGDIR, exist_ok=True)
+        load_sessions()
+        sys.exit(cli_reset_password(sys.argv[2:]))
+
     os.makedirs(LOGDIR, exist_ok=True)
     load_sessions()      # 重启后不踢掉仍在有效期内的登录
     pw = ensure_password()

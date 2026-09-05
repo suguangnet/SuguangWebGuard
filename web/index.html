@@ -123,6 +123,7 @@ textarea{min-height:340px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas
     <span class="host" id="rtime"></span>
     <button class="gray sm" id="refresh">刷新</button>
     <button class="gray sm" id="pwbtn">改密码</button>
+    <button class="gray sm" id="rstbtn">重置密码</button>
     <button class="gray sm" id="out">退出</button>
   </header>
   <nav>
@@ -430,6 +431,42 @@ $('#pwbtn').onclick=function(){
     function(){$('#pgo').onclick=function(){
       api('/api/password',{method:'POST',body:{old:$('#p0').value,new:$('#p1').value}})
       .then(function(j){if(j.ok){toast('密码已修改','k');closeModal()}else toast(j.msg,'e')})}})
+}
+
+/* ---------- 重置密码 ---------- */
+$('#rstbtn').onclick=function(){
+  modal('重置管理密码',
+    '<p class="dim small">系统会随机生成一个新密码，<b>不需要提供原密码</b>。'+
+    '新密码只显示这一次，请当场抄走。</p>'+
+    '<p class="dim small">重置后除当前浏览器外的<b>所有登录会话都会被注销</b>，'+
+    '已保存旧密码的浏览器需要重新输入。</p>'+
+    '<div class="row" style="margin-top:16px"><button class="warn" id="rgo2">确认重置</button>'+
+    '<button class="gray" onclick="closeModal()">取消</button></div>',
+    function(){$('#rgo2').onclick=function(){
+      $('#rgo2').disabled=true;
+      api('/api/password/reset',{method:'POST',body:{}}).then(function(j){
+        if(!j.ok){$('#rgo2').disabled=false;return toast(j.msg,'e')}
+        modal('新密码（只显示这一次）',
+          '<label>用户名</label><input id="np0" readonly value="'+esc(j.user)+'">'+
+          '<label>新密码</label><input id="np1" readonly value="'+esc(j.pass)+'">'+
+          (j.file?'<p class="dim small" style="margin-top:14px">也已写入服务器上的 <code class="mono">'+
+             esc(j.file)+'</code>（仅 root 可读，抄走后可删除）。</p>':'')+
+          '<div class="row" style="margin-top:16px"><button id="npc">复制密码</button>'+
+          '<button class="gray" onclick="closeModal()">我已记下</button></div>',
+          function(){
+            $('#npc').onclick=function(){
+              var i=$('#np1'); i.select(); i.setSelectionRange(0,999);
+              var ok=false;
+              try{ok=document.execCommand('copy')}catch(_){}
+              if(!ok&&navigator.clipboard){
+                navigator.clipboard.writeText(i.value).then(function(){toast('已复制','k')},
+                  function(){toast('复制失败，请手工选中','e')});
+              }else toast(ok?'已复制':'复制失败，请手工选中',ok?'k':'e');
+            };
+          });
+        toast('密码已重置，其他会话已注销','k');
+      }).catch(function(){$('#rgo2').disabled=false})
+    }})
 }
 
 /* ---------- 弹窗 ---------- */

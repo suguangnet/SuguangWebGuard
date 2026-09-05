@@ -91,7 +91,7 @@ else
   ylw "  /tmp 不支持 immutable（可能是 tmpfs），将在站点目录上验证"
 fi
 
-NEED="common.sh lock.sh unlock.sh status.sh watch.sh detect.sh aide-init.sh aide-check.sh"
+NEED="common.sh lock.sh unlock.sh status.sh watch.sh detect.sh aide-init.sh aide-check.sh reset-password.sh"
 for f in $NEED; do
   [ -f "$SRC/$f" ] || die "源目录缺少 $f，请确认解压完整"
 done
