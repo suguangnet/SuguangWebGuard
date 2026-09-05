@@ -21,6 +21,10 @@ a{color:var(--acc)}
   border:1px solid var(--line);border-radius:12px}
 #login h1{margin:0 0 6px;font-size:22px;text-align:center;letter-spacing:.5px}
 #login p{margin:0 0 26px;color:var(--dim);font-size:13px;text-align:center}
+#login .ck{display:flex;align-items:center;gap:8px;margin:18px 0 0;
+  color:var(--dim);font-size:13px;cursor:pointer;user-select:none}
+#login .ck input{width:auto;margin:0;cursor:pointer}
+#boot{padding:22vh 20px;text-align:center;color:var(--dim);font-size:13px}
 label{display:block;margin:14px 0 6px;font-size:13px;color:var(--dim)}
 input,textarea,select{width:100%;padding:10px 12px;background:var(--bg);color:var(--fg);
   border:1px solid var(--line);border-radius:8px;font:inherit;outline:none}
@@ -92,14 +96,22 @@ textarea{min-height:340px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas
 </head>
 <body>
 
-<div id="login">
+<!-- 载入态：先占位，等 /api/whoami 回来再决定显示登录页还是主界面。
+     否则登录页会先渲染出来再被换掉，已登录用户刷新时就会看到一闪的登录页。 -->
+<div id="boot">载入中…</div>
+
+<div id="login" class="hide">
   <h1>SuguangWebGuard</h1>
   <p>速光网络软件开发 - 网站防篡改系统</p>
-  <label>用户名</label>
-  <input id="lu" autocomplete="username" value="admin">
-  <label>密码</label>
-  <input id="lp" type="password" autocomplete="current-password">
-  <div style="margin-top:20px"><button id="lb" style="width:100%">登 录</button></div>
+  <!-- 必须是真正的 <form> 且用 submit 按钮，浏览器密码管理器才会识别为一次登录提交并提示保存 -->
+  <form id="lf" method="post" action="/api/login">
+    <label for="lu">用户名</label>
+    <input id="lu" name="username" autocomplete="username" value="admin">
+    <label for="lp">密码</label>
+    <input id="lp" name="password" type="password" autocomplete="current-password">
+    <label class="ck"><input type="checkbox" id="lr" checked> 记住我（30 天内免登录）</label>
+    <div style="margin-top:18px"><button type="submit" id="lb" style="width:100%">登 录</button></div>
+  </form>
   <div id="lmsg"></div>
 </div>
 
@@ -207,20 +219,33 @@ function api(path,opt){
 }
 
 /* ---------- 登录 ---------- */
-function showLogin(){$('#login').classList.remove('hide');$('#app').classList.add('hide');
+function showLogin(){$('#boot').classList.add('hide');
+  $('#login').classList.remove('hide');$('#app').classList.add('hide');
   if(TIMER){clearInterval(TIMER);TIMER=null}}
-function showApp(){$('#login').classList.add('hide');$('#app').classList.remove('hide');
+function showApp(){$('#boot').classList.add('hide');
+  $('#login').classList.add('hide');$('#app').classList.remove('hide');
   load(); if(!TIMER)TIMER=setInterval(function(){load(true)},20000)}
 
-$('#lb').onclick=function(){
+/* 走 form 的 submit 事件而不是按钮 onclick：浏览器靠「表单提交」这个信号
+   才会弹出保存密码的提示。preventDefault 只是阻止页面跳转，不影响该信号。 */
+$('#lf').addEventListener('submit',function(e){
+  e.preventDefault();
   var b=$('#lb'); b.disabled=true; $('#lmsg').innerHTML='';
-  api('/api/login',{method:'POST',body:{user:$('#lu').value,pass:$('#lp').value}})
+  api('/api/login',{method:'POST',body:{
+    user:$('#lu').value, pass:$('#lp').value, remember:$('#lr').checked}})
   .then(function(j){ b.disabled=false;
-    if(j.ok){CSRF=j.csrf; $('#lp').value=''; showApp()}
+    if(j.ok){
+      CSRF=j.csrf;
+      // 若浏览器支持凭据管理 API（需 HTTPS），再主动存一次，成功率更高
+      try{ if(window.PasswordCredential&&navigator.credentials)
+        navigator.credentials.store(new PasswordCredential($('#lf'))); }catch(_){}
+      showApp();
+      // 延后清空：立刻清会让部分浏览器判定「表单没真正提交」而不提示保存
+      setTimeout(function(){$('#lp').value=''},2000);
+    }
     else $('#lmsg').innerHTML='<div class="msg e">'+esc(j.msg)+'</div>'})
   .catch(function(){b.disabled=false})
-}
-$('#lp').addEventListener('keydown',function(e){if(e.key==='Enter')$('#lb').click()})
+})
 $('#out').onclick=function(){api('/api/logout',{method:'POST'}).then(function(){CSRF='';showLogin()})}
 
 /* ---------- 导航 ---------- */

@@ -35,7 +35,9 @@ AIDE_LOG = os.path.join(LOGDIR, 'aide-report.log')
 WATCH_LOG = os.path.join(LOGDIR, 'watch.log')
 WEB_LOG = os.path.join(LOGDIR, 'web.log')
 
-SESSION_TTL = 8 * 3600
+SESSION_TTL = 8 * 3600                  # 普通登录：8 小时
+SESSION_TTL_REMEMBER = 30 * 24 * 3600   # 勾选「记住我」：30 天
+SESS_FILE = os.path.join(PREFIX, 'sessions.json')
 LOGIN_MAX_FAIL = 5
 LOGIN_BAN_SEC = 600
 
@@ -144,11 +146,58 @@ SESS_LOCK = threading.Lock()
 FAILS = {}
 
 
-def new_session(ip):
-    sid = secrets.token_urlsafe(32)
+def _sess_save_locked():
+    """把会话表落盘。调用方必须已持有 SESS_LOCK。
+
+    不落盘的话，systemctl restart 或服务器重启会清空内存里的会话表，
+    用户明明 cookie 还没过期却被踢回登录页——这正是「每次打开都要重输密码」的原因。
+    文件含会话 ID（等同于登录凭证），必须 0600。
+    """
+    tmp = SESS_FILE + '.tmp'
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, json.dumps(SESSIONS).encode('utf-8'))
+        finally:
+            os.close(fd)
+        os.replace(tmp, SESS_FILE)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+
+
+def load_sessions():
+    """启动时恢复未过期的会话"""
+    if not os.path.exists(SESS_FILE):
+        return
+    try:
+        with open(SESS_FILE) as f:
+            data = json.load(f)
+    except Exception:
+        return
+    if not isinstance(data, dict):
+        return
+    nowt = time.time()
     with SESS_LOCK:
-        SESSIONS[sid] = {'ip': ip, 'exp': time.time() + SESSION_TTL,
+        for sid, s in data.items():
+            try:
+                if isinstance(s, dict) and s.get('exp', 0) > nowt and s.get('csrf'):
+                    SESSIONS[sid] = s
+            except Exception:
+                continue
+        if SESSIONS:
+            _sess_save_locked()      # 顺手把已过期的清出文件
+
+
+def new_session(ip, remember=False):
+    sid = secrets.token_urlsafe(32)
+    ttl = SESSION_TTL_REMEMBER if remember else SESSION_TTL
+    with SESS_LOCK:
+        SESSIONS[sid] = {'ip': ip, 'ttl': ttl, 'exp': time.time() + ttl,
                          'csrf': secrets.token_urlsafe(24)}
+        _sess_save_locked()
     return sid
 
 
@@ -159,15 +208,23 @@ def get_session(sid):
         s = SESSIONS.get(sid)
         if not s:
             return None
-        if s['exp'] < time.time():
+        nowt = time.time()
+        if s['exp'] < nowt:
             SESSIONS.pop(sid, None)
+            _sess_save_locked()
             return None
+        # 滑动续期：剩余时间不足一半时才续，避免每个请求都写盘
+        ttl = s.get('ttl', SESSION_TTL)
+        if s['exp'] - nowt < ttl / 2.0:
+            s['exp'] = nowt + ttl
+            _sess_save_locked()
         return s
 
 
 def drop_session(sid):
     with SESS_LOCK:
-        SESSIONS.pop(sid, None)
+        if SESSIONS.pop(sid, None) is not None:
+            _sess_save_locked()
 
 
 def login_banned(ip):
@@ -470,7 +527,7 @@ class Handler(BaseHTTPRequestHandler):
                 if sid:
                     drop_session(sid)
                 return self._json({'ok': True}, extra=[('Set-Cookie',
-                                                        'at_sid=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict')])
+                                                        'at_sid=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax')])
             s = self._require()
             if not s:
                 return
@@ -514,13 +571,17 @@ class Handler(BaseHTTPRequestHandler):
             wlog('登录失败 ip=%s user=%s' % (ip, user))
             return self._err('用户名或密码错误')
         FAILS.pop(ip, None)
-        sid = new_session(ip)
+        remember = bool(b.get('remember'))
+        sid = new_session(ip, remember)
         s = get_session(sid)
-        audit('登录成功 ip=%s user=%s' % (ip, user))
+        ttl = SESSION_TTL_REMEMBER if remember else SESSION_TTL
+        audit('登录成功 ip=%s user=%s 记住我=%s' % (ip, user, '是' if remember else '否'))
+        # SameSite=Lax 而非 Strict：Strict 会导致从站外链接/书签打开时浏览器不带 cookie，
+        # 表现为「明明登录过却又要求登录」。Lax 仍然拦截跨站 POST，且写操作另有 CSRF 令牌。
         return self._json({'ok': True, 'csrf': s['csrf']},
                           extra=[('Set-Cookie',
-                                  'at_sid=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Strict'
-                                  % (sid, SESSION_TTL))])
+                                  'at_sid=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Lax'
+                                  % (sid, ttl))])
 
     def _action(self, s):
         b = self._body()
@@ -674,6 +735,7 @@ def ensure_password():
 
 def main():
     os.makedirs(LOGDIR, exist_ok=True)
+    load_sessions()      # 重启后不踢掉仍在有效期内的登录
     pw = ensure_password()
     if pw:
         msg = ('=' * 56 + '\n'
