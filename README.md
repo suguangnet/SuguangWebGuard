@@ -132,7 +132,61 @@ SELinux，但启用需重启 + 全盘 relabel，多数生产环境不划算。
 
 ## 安装
 
-### 一、准备安装包
+### 一键安装（推荐）
+
+服务器能访问 GitHub 时，一条命令直接装好，不用手工上传：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/suguangnet/SuguangWebGuard/main/quick-install.sh \
+  | bash -s -- --site /www/wwwroot/你的站点
+```
+
+想连加锁一并完成（跳过人工核对，仅建议用于结构简单的站点）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/suguangnet/SuguangWebGuard/main/quick-install.sh \
+  | bash -s -- --site /www/wwwroot/你的站点 --port 19197 --lock --yes
+```
+
+`quick-install.sh` 只做四件事：下载源码 → 校验完整性 → 规范化换行符 →
+调用 `install.sh`。真正的安装逻辑全在 `install.sh` 里，它自己的参数：
+
+| 参数 | 作用 |
+|---|---|
+| `--ref <分支或标签>` | 指定版本，默认 `main`。**生产环境建议指定 tag** |
+| `--mirror <前缀>` | 通过镜像下载，如 `--mirror https://ghfast.top/`；`--mirror auto` 依次尝试内置镜像 |
+| `--src-dir <路径>` | 源码存放位置，默认 `/root/SuguangWebGuard-src` |
+| `--download-only` | 只下载不安装 |
+| `--help` | 显示帮助 |
+
+其余参数原样透传给 `install.sh`（`--site` `--port` `--lock` `--yes` `--no-web` `--no-aide` 等）。
+
+源码会保留在 `--src-dir` 指定的目录，以后升级、卸载都从那里执行。
+
+#### 网络不通时
+
+国内服务器有时连不上 GitHub。脚本会明确报错并给出两条出路：
+
+```bash
+# 走镜像
+curl -fsSL <脚本URL> | bash -s -- --mirror auto --site /www/wwwroot/你的站点
+
+# 或改用下面的「手工安装」
+```
+
+> **关于 `curl | bash` 的安全性**：对一个防篡改软件来说，用管道直接执行远程脚本
+> 确实有点讽刺。脚本已做了完整性校验（16 个关键文件缺一即中止）和语法检查，
+> 但这只能防传输截断，**防不住仓库或镜像被投毒**。
+>
+> 更稳妥的做法：
+> - 用 `--ref <tag>` 锁定版本，而不是跟着 `main` 走
+> - 先 `--download-only` 下载下来，人工看过 `install.sh` 再执行
+> - 或者干脆用下面的手工安装方式
+> - 走第三方镜像时脚本会明确提示「内容不受本项目控制」
+
+### 手工安装
+
+#### 一、准备安装包
 
 把整个 `SuguangWebGuard` 目录传到服务器任意位置：
 
@@ -159,7 +213,7 @@ web/webui.py
 web/index.html
 ```
 
-### 二、执行安装
+#### 二、执行安装
 
 **推荐用法**（自动探测该站点需要保持可写的目录）：
 
@@ -201,7 +255,7 @@ chmod +x install.sh
 9. 安装并启动 Web 管理界面
 10. 可选加锁 + 建立 AIDE 基线
 
-### 三、核对配置（这一步不能跳过）
+#### 三、核对配置（这一步不能跳过）
 
 安装脚本默认**不加锁**，因为自动探测出来的可写目录清单必须人工确认。
 
@@ -225,7 +279,7 @@ vi /www/SuguangWebGuard/exclude.conf
 /www/SuguangWebGuard/detect.sh /www/wwwroot/你的站点 90
 ```
 
-### 四、加锁启用
+#### 四、加锁启用
 
 ```bash
 /www/SuguangWebGuard/lock.sh          # 加锁
@@ -233,7 +287,7 @@ vi /www/SuguangWebGuard/exclude.conf
 /www/SuguangWebGuard/status.sh        # 确认状态为"已保护"
 ```
 
-### 五、验证网站正常
+#### 五、验证网站正常
 
 ```bash
 curl -sk -o /dev/null -w '%{http_code}\n' -H 'Host: 你的域名' https://127.0.0.1/
@@ -242,7 +296,7 @@ curl -sk -o /dev/null -w '%{http_code}\n' -H 'Host: 你的域名' https://127.0.
 再到前台点几个页面、进后台发一篇文章、传一张图，确认业务不受影响。
 若出现 `Permission denied` 报错，说明有可写目录漏排，见[故障排查](#故障排查)。
 
-### 六、验证防护生效（建议做）
+#### 六、验证防护生效（建议做）
 
 以 `www` 用户身份模拟攻击者，四条应全部被拒：
 
@@ -340,6 +394,8 @@ tail -3 /www/SuguangWebGuard/logs/alert.log
 
 | 文件 | 大致大小 | 必需 | 作用 |
 |---|---|---|---|
+| `quick-install.sh` | 7 K | 可选 | 一键安装引导：下载 + 校验 + 调用 install.sh。
+手工安装时用不到 |
 | `install.sh` | 15 K | 必需 | 安装脚本，入口 |
 | `uninstall.sh` | 4 K | 建议 | 卸载脚本。缺失时装得上，但以后只能手工卸载 |
 | `common.sh` | 3 K | 必需 | 公共库：配置解析、find 排除表达式、AIDE 配置生成 |
