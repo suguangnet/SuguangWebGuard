@@ -84,14 +84,14 @@ mtime/ctime` 全量比对。**即使攻击者拿到 root 绕过了第一层，�
 
 对标商业防篡改产品：
 
-| 能力 | 商业产品（ieGuard / 阿里云） | SuguangWebGuard |
+| 能力 | 商业产品（阿里云云安全中心防篡改） | SuguangWebGuard |
 |---|---|---|
 | 阻止写入 | 内核驱动 hook，**按进程授权** | `chattr +i`，一刀切 |
 | 实时监控告警 | 自带 agent | inotify + 定期扫描 |
 | 完整性核查 | 云端基线 | AIDE 本地基线 |
 | 自动还原 | 备份目录自动回滚 | 隔离区一键恢复（Web 界面） |
 | 输出时水印校验 | 内嵌 Web 服务器模块 | **无**（开源无对应品） |
-| 管理界面 | 云端控制台 | 本地 Web 界面 |
+| 管理界面 | 云端控制台 | 远程 Web 界面 |
 
 **主要差距**：商业产品能「只允许发布程序写入、Web 进程不能写」，本系统无法按
 进程区分，所以运维时必须显式 `unlock` / `lock`。开源里唯一能做进程级授权的是
@@ -107,14 +107,14 @@ SELinux，但启用需重启 + 全盘 relabel，多数生产环境不划算。
 
 ### 一键安装（推荐）
 
-服务器能访问 GitHub 时，一条命令直接装好，不用手工上传：
+服务器能访问 GitHub 时，一条命令直接装好，不用手工上传（默认19196端口，不加锁，在后台手动加锁）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/suguangnet/SuguangWebGuard/main/quick-install.sh \
   | bash -s -- --site /www/wwwroot/你的站点
 ```
 
-想连加锁一并完成（跳过人工核对，仅建议用于结构简单的站点）：
+想改变默认端口，直接加锁一并完成（跳过人工核对，仅建议用于结构简单的站点）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/suguangnet/SuguangWebGuard/main/quick-install.sh \
@@ -136,68 +136,19 @@ curl -fsSL https://raw.githubusercontent.com/suguangnet/SuguangWebGuard/main/qui
 
 源码会保留在 `--src-dir` 指定的目录，以后升级、卸载都从那里执行。
 
-#### 网络不通时
-
-国内服务器有时连不上 GitHub。脚本会明确报错并给出两条出路：
-
-```bash
-# 走镜像
-curl -fsSL <脚本URL> | bash -s -- --mirror auto --site /www/wwwroot/你的站点
-
-# 或改用下面的「手工安装」
-```
-
-> **关于 `curl | bash` 的安全性**：对一个防篡改软件来说，用管道直接执行远程脚本
-> 确实有点讽刺。脚本已做了完整性校验（16 个关键文件缺一即中止）和语法检查，
-> 但这只能防传输截断，**防不住仓库或镜像被投毒**。
->
-> 更稳妥的做法：
-> - 用 `--ref <tag>` 锁定版本，而不是跟着 `main` 走
-> - 先 `--download-only` 下载下来，人工看过 `install.sh` 再执行
-> - 或者干脆用下面的手工安装方式
-> - 走第三方镜像时脚本会明确提示「内容不受本项目控制」
-
 ### 手工安装
 
-#### 一、准备安装包
-
-把整个 `SuguangWebGuard` 目录传到服务器任意位置：
-
 ```bash
-# 本地打包上传
-tar czf SuguangWebGuard.tar.gz SuguangWebGuard/
-scp SuguangWebGuard.tar.gz root@服务器IP:/root/
-# 服务器上解压
-ssh root@服务器IP
-cd /root && tar xzf SuguangWebGuard.tar.gz && cd SuguangWebGuard
-```
+# 走源码安装
+cd /www
+git clone https://github.com/suguangnet/SuguangWebGuard.git
+cd SuguangWebGuard
+chmod 777 install.sh
+./install.sh --site /www/wwwroot/  //全部站点
+./install.sh --site /www/wwwroot/你的站点 //单独站点
 
-安装包必须包含以下文件，缺一不可（`install.sh` 会先做完整性检查）：
+# 多个站点一起装：
 
-```
-install.sh  uninstall.sh  detect.sh  common.sh
-lock.sh  unlock.sh  status.sh  watch.sh
-aide-init.sh  aide-check.sh  exclude.conf.example  README.md
-dist/suguang-webguard-watch.service
-dist/suguang-webguard-web.service
-dist/cron.suguang-webguard
-dist/logrotate.suguang-webguard
-web/webui.py
-web/index.html
-```
-
-#### 二、执行安装
-
-**推荐用法**（自动探测该站点需要保持可写的目录）：
-
-```bash
-chmod +x install.sh
-./install.sh --site /www/wwwroot/你的站点
-```
-
-多个站点一起装：
-
-```bash
 ./install.sh --site /www/wwwroot/a.com --site /www/wwwroot/b.com
 ```
 
@@ -218,15 +169,14 @@ chmod +x install.sh
 
 1. 前置检查（root 权限、必需命令、**实测文件系统是否支持 immutable 属性**、
    源文件完整性、python3 版本）
-2. **检测旧版 `antitamper` 安装并询问是否自动迁移**
-3. 安装依赖（`inotify-tools`、`aide`）
-4. 创建目录
-5. 复制程序文件并逐个做语法检查（含 `webui.py` 的 `py_compile`）
-6. 生成 `exclude.conf`（指定了 `--site` 时自动探测）
-7. 安装 systemd 服务、cron、logrotate
-8. 启动实时监控守护
-9. 安装并启动 Web 管理界面
-10. 可选加锁 + 建立 AIDE 基线
+2. 安装依赖（`inotify-tools`、`aide`）
+3. 创建目录
+4. 复制程序文件并逐个做语法检查（含 `webui.py` 的 `py_compile`）
+5. 生成 `exclude.conf`（指定了 `--site` 时自动探测）
+6. 安装 systemd 服务、cron、logrotate
+7. 启动实时监控守护
+8. 安装并启动 Web 管理界面
+9. 可选加锁 + 建立 AIDE 基线
 
 #### 三、核对配置（这一步不能跳过）
 
@@ -269,6 +219,19 @@ curl -sk -o /dev/null -w '%{http_code}\n' -H 'Host: 你的域名' https://127.0.
 再到前台点几个页面、进后台发一篇文章、传一张图，确认业务不受影响。
 若出现 `Permission denied` 报错，说明有可写目录漏排，见[故障排查](#故障排查)。
 
+#### 六、验证防护生效（建议做）
+
+以 `www` 用户身份模拟攻击者，四条应全部被拒：
+
+```bash
+S=/www/wwwroot/你的站点
+su -s /bin/bash www -c "echo x >> $S/index.php"        # 改内容 → 应拒绝
+su -s /bin/bash www -c "mv $S/index.php $S/x.php"      # 改文件名 → 应拒绝
+su -s /bin/bash www -c "rm -f $S/index.php"            # 删除 → 应拒绝
+su -s /bin/bash www -c "echo '<?php' > $S/evil.php"    # 新建脚本 → 允许，但应被隔离
+sleep 3; ls $S/evil.php 2>/dev/null || echo "已被隔离"
+tail -3 /www/SuguangWebGuard/logs/alert.log
+```
 
 ### 重新安装 / 升级
 
@@ -947,6 +910,34 @@ Web 端口的防火墙 / 安全组放行规则需自行撤销。
 `aide` 与 `inotify-tools` 两个软件包不会被卸载（可能有其他用途）。
 
 
+
+## 从旧版升级
+
+本系统前身为 `antitamper`，1.1.0 起更名为 SuguangWebGuard；1.2.0 起所有文件
+统一存放到 `/www/SuguangWebGuard` 一个目录内，便于查找与备份。
+
+| 项 | v1.0（antitamper） | v1.1 | **v1.2（当前）** |
+|---|---|---|---|
+| 程序目录 | `/root/antitamper` | `/root/SuguangWebGuard` | `/www/SuguangWebGuard` |
+| 日志 | `/var/log/antitamper` | `/var/log/suguang-webguard` | `/www/SuguangWebGuard/logs` |
+| AIDE 配置 | `/etc/aide/aide-web.conf` | `/etc/suguang-webguard/aide.conf` | `/www/SuguangWebGuard/aide.conf` |
+| AIDE 基线 | `/var/lib/aide/aide-web.db.gz` | `/var/lib/suguang-webguard/aide.db.gz` | `/www/SuguangWebGuard/aide.db.gz` |
+| 守护服务 | `antitamper-watch` | `suguang-webguard-watch` | 同 v1.1 |
+| Web 服务 | `antitamper-web` | `suguang-webguard-web` | 同 v1.1 |
+
+只有 systemd 单元、cron、logrotate 三个文件因系统要求仍在 `/etc` 下，
+它们全部指向 `/www/SuguangWebGuard`。
+
+直接运行新版 `install.sh` 即可，它会**自动检测旧版（v1.0 / v1.1 均支持）并询问
+是否迁移**。迁移动作：
+
+- 停用并移除旧服务、旧 cron / logrotate
+- 沿用旧的 `exclude.conf`、`web.conf`（账号密码不变）、隔离区、历史日志
+- 删除旧目录、旧 AIDE 基线与残留的空配置目录
+
+> 站点文件上的 `chattr +i` 锁打在文件 inode 上，与工具安装路径无关，
+> **迁移过程中保护不会中断**，也不需要先解锁。
+> 迁移后需重建一次 AIDE 基线（安装脚本最后一步会询问）。
 
 ---
 
