@@ -156,7 +156,10 @@ grn "  已下载 $(stat -c%s "$TGZ" 2>/dev/null || echo '?') 字节"
 # ---------- 3. 解压并校验 ----------
 step "[3/4] 解压并校验完整性"
 tar xzf "$TGZ" -C "$TMP" || die "解压失败"
-TOP=$(tar tzf "$TGZ" | head -1 | cut -d/ -f1)
+# 注意：不能用 `tar tzf ... | head -1`。head 读完一行即关闭管道，tar 收到
+# SIGPIPE 返回非零，配合 set -o pipefail 会让整个脚本直接退出。
+# 改用 sed 读完全部输入再取第一行。
+TOP=$(tar tzf "$TGZ" | sed -n "1{s|/.*||;p;}")
 EXTRACTED="$TMP/$TOP"
 [ -d "$EXTRACTED" ] || die "解压结果异常，未找到 $TOP"
 
