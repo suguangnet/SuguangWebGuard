@@ -4,7 +4,7 @@
 
 基于 Linux 内核原生能力的轻量级网站防篡改系统。不依赖任何商业软件，用
 `chattr` + `inotify` + `AIDE` 三层组合，实现商业防篡改产品（阿里云网页防篡改、
-iGuard 等）的核心防护能力，并附带一套 Web 管理界面。
+ieGuard 等）的核心防护能力，并附带一套 Web 管理界面。
 
 **核心语义**：受保护的网站文件**不能改内容、不能改文件名、不能删除**；
 读取和执行完全不受影响；允许写入新文件（新出现的脚本会被实时隔离）。
@@ -18,7 +18,6 @@ iGuard 等）的核心防护能力，并附带一套 Web 管理界面。
 
 ## 目录
 
-- [背景](#背景)
 - [防护原理](#防护原理)
 - [能力边界](#能力边界)
 - [安装](#安装)
@@ -40,32 +39,6 @@ iGuard 等）的核心防护能力，并附带一套 Web 管理界面。
 ---
 
 
-
-## 背景
-
-本系统源于一起真实的入侵事件处置。
-
-2026-08-04 10:26:33，攻击 IP `18.163.65.72`（AWS 香港）盗用管理员会话，通过
-PbootCMS 后台「在线更新」接口 `admin.php?p=/Upgrade/down` 从远端拉取伪装成
-`.png` 的恶意文件落地到 `runtime/upgrade/`，执行后篡改了两个核心文件：
-
-- `core/basic/Check.php` —— 植入移动端 SEO 劫持代码（外链仿冒 jsdelivr 的
-  `cdn.jsdclivr.com`）+ `PKEY` 请求头任意文件写入后门
-- `core/view/View.php` —— 插入一行调用，使劫持代码在每次模板渲染时执行
-
-劫持逻辑极其隐蔽：只在「首次访问 + 有搜索引擎来路 + 手机 UA + 200/HTML +
-URL 不含 admin」七个条件同时满足时才注入，所以站长用电脑直接打开永远看不到问题。
-
-针对该攻击链的每一步，三层防护的拦截点：
-
-| 攻击步骤 | 拦截层 |
-|---|---|
-| 落地 `runtime/upgrade/tmp.php` | 隔离层（实时 + 定期扫描兜底） |
-| 篡改 `core/basic/Check.php` | **阻止层（内核直接拒绝写入）** |
-| 篡改 `core/view/View.php` | **阻止层（内核直接拒绝写入）** |
-| 若提权 root 用 `chattr -i` 绕过 | 核查层（AIDE 次日报告留痕） |
-
----
 
 ## 防护原理
 
@@ -111,7 +84,7 @@ mtime/ctime` 全量比对。**即使攻击者拿到 root 绕过了第一层，�
 
 对标商业防篡改产品：
 
-| 能力 | 商业产品（iGuard / 阿里云） | SuguangWebGuard |
+| 能力 | 商业产品（ieGuard / 阿里云） | SuguangWebGuard |
 |---|---|---|
 | 阻止写入 | 内核驱动 hook，**按进程授权** | `chattr +i`，一刀切 |
 | 实时监控告警 | 自带 agent | inotify + 定期扫描 |
@@ -124,7 +97,7 @@ mtime/ctime` 全量比对。**即使攻击者拿到 root 绕过了第一层，�
 进程区分，所以运维时必须显式 `unlock` / `lock`。开源里唯一能做进程级授权的是
 SELinux，但启用需重启 + 全盘 relabel，多数生产环境不划算。
 
-补充说明：iGuard 主打的「核心内嵌数字水印」引擎**并不能阻止文件被篡改**，它只
+补充说明：ieGuard 主打的「核心内嵌数字水印」引擎**并不能阻止文件被篡改**，它只
 保证被改过的内容不被发出去，属于检测 + 事后还原。真正起阻止作用的是它的写调用
 拦截引擎，这一层与本系统的 `chattr` 层等价。
 
@@ -506,8 +479,8 @@ tar czf swg-backup-$(date +%Y%m%d).tar.gz -C /www SuguangWebGuard
 只操作单个站点时在命令后加站点路径：
 
 ```bash
-/www/SuguangWebGuard/unlock.sh /www/wwwroot/example.com
-/www/SuguangWebGuard/lock.sh   /www/wwwroot/example.com
+/www/SuguangWebGuard/unlock.sh /www/wwwroot/suguang.cc
+/www/SuguangWebGuard/lock.sh   /www/wwwroot/suguang.cc
 ```
 
 
@@ -526,7 +499,7 @@ tar czf swg-backup-$(date +%Y%m%d).tar.gz -C /www SuguangWebGuard
 只需要编辑 `exclude.conf`。三种指令：
 
 ```conf
-SITE=/www/wwwroot/example.com       # 受保护站点根目录（绝对路径）
+SITE=/www/wwwroot/suguang.cc       # 受保护站点根目录（绝对路径）
 EXCLUDE=runtime                     # 保持可写、不加锁的目录（相对站点根）
 PHPOK=runtime/complile              # 允许程序在此生成 .php，监控不告警（相对站点根）
 ```
@@ -541,7 +514,7 @@ PHPOK=runtime/complile              # 允许程序在此生成 .php，监控不�
 **PbootCMS**
 
 ```conf
-SITE=/www/wwwroot/example.com
+SITE=/www/wwwroot/suguang.cc
 EXCLUDE=runtime          # 模板编译缓存、session、配置缓存
 EXCLUDE=data             # SQLite 数据库文件
 EXCLUDE=static/upload    # 后台图片上传
@@ -587,7 +560,7 @@ PHPOK=e/data/tmp
 维护模式下的日志：
 
 ```
-2026-09-05 01:30:10 [维护模式-仅记录] 脚本文件变动(实时): /www/wwwroot/example.com/core/basic/Check.php
+2026-09-05 01:30:10 [维护模式-仅记录] 脚本文件变动(实时): /www/wwwroot/suguang.cc/core/basic/Check.php
 ```
 
 ---
@@ -831,7 +804,7 @@ systemctl restart suguang-webguard-watch
 
 ```bash
 cd /www/SuguangWebGuard && . ./common.sh
-S=/www/wwwroot/example.com; build_prune $S
+S=/www/wwwroot/suguang.cc; build_prune $S
 find $S "${FIND_PRUNE[@]}" -type f -print0 | while IFS= read -r -d '' f; do
   lsattr -d "$f" 2>/dev/null | grep -q '^....i' || echo "未锁: $f"
 done
