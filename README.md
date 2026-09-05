@@ -269,19 +269,6 @@ curl -sk -o /dev/null -w '%{http_code}\n' -H 'Host: 你的域名' https://127.0.
 再到前台点几个页面、进后台发一篇文章、传一张图，确认业务不受影响。
 若出现 `Permission denied` 报错，说明有可写目录漏排，见[故障排查](#故障排查)。
 
-#### 六、验证防护生效（建议做）
-
-以 `www` 用户身份模拟攻击者，四条应全部被拒：
-
-```bash
-S=/www/wwwroot/你的站点
-su -s /bin/bash www -c "echo x >> $S/index.php"        # 改内容 → 应拒绝
-su -s /bin/bash www -c "mv $S/index.php $S/x.php"      # 改文件名 → 应拒绝
-su -s /bin/bash www -c "rm -f $S/index.php"            # 删除 → 应拒绝
-su -s /bin/bash www -c "echo '<?php' > $S/evil.php"    # 新建脚本 → 允许，但应被隔离
-sleep 3; ls $S/evil.php 2>/dev/null || echo "已被隔离"
-tail -3 /www/SuguangWebGuard/logs/alert.log
-```
 
 ### 重新安装 / 升级
 
@@ -960,34 +947,6 @@ Web 端口的防火墙 / 安全组放行规则需自行撤销。
 `aide` 与 `inotify-tools` 两个软件包不会被卸载（可能有其他用途）。
 
 
-
-## 从旧版升级
-
-本系统前身为 `antitamper`，1.1.0 起更名为 SuguangWebGuard；1.2.0 起所有文件
-统一存放到 `/www/SuguangWebGuard` 一个目录内，便于查找与备份。
-
-| 项 | v1.0（antitamper） | v1.1 | **v1.2（当前）** |
-|---|---|---|---|
-| 程序目录 | `/root/antitamper` | `/root/SuguangWebGuard` | `/www/SuguangWebGuard` |
-| 日志 | `/var/log/antitamper` | `/var/log/suguang-webguard` | `/www/SuguangWebGuard/logs` |
-| AIDE 配置 | `/etc/aide/aide-web.conf` | `/etc/suguang-webguard/aide.conf` | `/www/SuguangWebGuard/aide.conf` |
-| AIDE 基线 | `/var/lib/aide/aide-web.db.gz` | `/var/lib/suguang-webguard/aide.db.gz` | `/www/SuguangWebGuard/aide.db.gz` |
-| 守护服务 | `antitamper-watch` | `suguang-webguard-watch` | 同 v1.1 |
-| Web 服务 | `antitamper-web` | `suguang-webguard-web` | 同 v1.1 |
-
-只有 systemd 单元、cron、logrotate 三个文件因系统要求仍在 `/etc` 下，
-它们全部指向 `/www/SuguangWebGuard`。
-
-直接运行新版 `install.sh` 即可，它会**自动检测旧版（v1.0 / v1.1 均支持）并询问
-是否迁移**。迁移动作：
-
-- 停用并移除旧服务、旧 cron / logrotate
-- 沿用旧的 `exclude.conf`、`web.conf`（账号密码不变）、隔离区、历史日志
-- 删除旧目录、旧 AIDE 基线与残留的空配置目录
-
-> 站点文件上的 `chattr +i` 锁打在文件 inode 上，与工具安装路径无关，
-> **迁移过程中保护不会中断**，也不需要先解锁。
-> 迁移后需重建一次 AIDE 基线（安装脚本最后一步会询问）。
 
 ---
 
