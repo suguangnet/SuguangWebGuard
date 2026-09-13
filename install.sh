@@ -338,7 +338,7 @@ PYEOF
   else
     "$PY" - "$WEBCONF" "$WEBPORT" <<'PYEOF'
 import json,sys
-json.dump({'bind':'0.0.0.0','port':int(sys.argv[2]),'user':'admin',
+json.dump({'bind':'0.0.0.0','port':int(sys.argv[2]),'user':'suguang',
            'salt':'','pwhash':'','allow_cidr':[]},
           open(sys.argv[1],'w'),indent=2,ensure_ascii=False)
 PYEOF

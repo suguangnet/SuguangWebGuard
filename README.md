@@ -74,9 +74,14 @@ ieGuard 等）的核心防护能力，并附带一套 Web 管理界面。
 
 ### 第三层：AIDE —— 每日核查
 
-每天 04:17 对保护范围内所有文件做 `md5 + sha256 + 权限 + 属主 + 大小 + inode +
-mtime/ctime` 全量比对。**即使攻击者拿到 root 绕过了第一层，改动也会在次日报告
-里暴露。**
+每天 04:17（北京时间）对保护范围内所有文件做 `md5 + sha256 + 权限 + 属主 +
+大小 + inode + mtime` 全量比对。**即使攻击者拿到 root 绕过了第一层，改动也会在
+次日报告里暴露。**
+
+> **为什么不比对 ctime**：`lock.sh` 的 `chattr +i` 会改掉每个文件的 ctime，
+> 比对 ctime 会让加锁当晚的报告变成「10 万个文件全变了」（实测 100357 条差异
+> 里 100356 条只差 ctime），真正被篡改的那一个反而被淹没。内容篡改由
+> md5+sha256+大小 兜住，权限属主变动由 p+u+g 兜住，文件被整体替换由 inode 兜住。
 
 ---
 
@@ -703,7 +708,7 @@ ssh -L 19196:127.0.0.1:19196 root@服务器IP -N
 {
   "bind": "0.0.0.0",
   "port": 19196,
-  "user": "admin",
+  "user": "suguang",
   "salt": "...",
   "pwhash": "...",
   "allow_cidr": [],
@@ -789,6 +794,32 @@ tail -f /www/SuguangWebGuard/logs/web.log  # 访问与操作日志
 
 ---
 
+## 时间与时区
+
+本系统的**所有**时间戳（告警日志、隔离文件名、审计记录、Web 界面、每日核查的
+04:17）一律为**北京时间（东八区）**，不跟随服务器自身时区。
+
+钉死在三处，缺一不可：
+
+| 位置 | 做法 |
+|---|---|
+| shell 脚本 | `common.sh` 里 `export TZ=Asia/Shanghai` |
+| Web 服务 | `webui.py` 启动时 `os.environ['TZ']` + `time.tzset()` |
+| systemd / cron | 单元文件 `Environment=TZ=Asia/Shanghai`、cron 文件 `TZ=Asia/Shanghai` |
+
+之所以不依赖服务器时区：云主机镜像默认多半是 UTC，那样日志时间会比现场人员的
+手表慢 8 小时，事后对事故时间线时足够把人绕晕。systemd 也不会把 shell 的 TZ
+传给服务进程，所以单元文件里必须单独写一遍。
+
+验证（即使外部强行传 UTC，也应输出北京时间）：
+
+```bash
+cd /www/SuguangWebGuard
+TZ=UTC bash -c '. ./common.sh; ts'     # 应为北京时间，不是 UTC
+```
+
+---
+
 ## 故障排查
 
 ### 网站报错 / 白屏，怀疑是加锁导致
@@ -865,6 +896,15 @@ watch 是按需分配的，抬高上限本身不占内存（满配约 1KB/watch�
 1. 有可写目录没排除 —— 看报告里是哪些文件，补进 `exclude.conf` 的 `EXCLUDE`，
    然后重跑 `aide-init.sh`（会自动重新生成 AIDE 配置）
 2. 你自己改过文件但没重建基线 —— 跑 `aide-init.sh`
+
+**如果报告的条数是「几乎全部文件」**，先看它报的是哪个属性：
+
+```bash
+awk '/^Detailed information about changes/,0' /www/SuguangWebGuard/logs/aide-report.log   | grep -oE '^ [A-Za-z]+ +:' | sort | uniq -c | sort -rn
+```
+
+只有 `Ctime` 的话说明用的是旧版 `aide.conf`（`WEBFILE` 里带 `c`），那是加锁动作
+自己触发的误报，不是入侵。升级后重跑一次 `aide-init.sh` 即可。
 
 ### lock.sh 提示有文件未能加锁
 

@@ -1,3 +1,5 @@
 # SuguangWebGuard：每日 04:17 做 AIDE 完整性核查
 LANG=en_US.UTF-8
+# 04:17 指的是北京时间
+TZ=Asia/Shanghai
 17 4 * * * root /www/SuguangWebGuard/aide-check.sh >/dev/null 2>&1

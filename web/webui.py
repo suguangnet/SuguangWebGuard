@@ -23,6 +23,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
 
+# 统一北京时间（东八区）。systemd 不会把 TZ 传给服务进程，而云主机镜像默认
+# 多半是 UTC —— 那样界面上的"最近告警"「基线时间」会比现场时间慢 8 小时。
+# 必须在任何 time.strftime/localtime 之前执行。
+os.environ['TZ'] = 'Asia/Shanghai'
+time.tzset()
+
 PREFIX = '/www/SuguangWebGuard'
 WEBDIR = os.path.join(PREFIX, 'web')
 CONF = os.path.join(PREFIX, 'web.conf')
@@ -107,7 +113,7 @@ def tail(path, lines=200):
 DEFAULT_CONF = {
     'bind': '0.0.0.0',
     'port': 19196,
-    'user': 'admin',
+    'user': 'suguang',
     'salt': '',
     'pwhash': '',
     'allow_cidr': [],
@@ -150,7 +156,7 @@ def save_password_file(pw):
         fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
             os.write(fd, ('user: %s\npass: %s\n生成于 %s\n'
-                          % (CFG.get('user', 'admin'), pw, now())).encode('utf-8'))
+                          % (CFG.get('user', 'suguang'), pw, now())).encode('utf-8'))
         finally:
             os.close(fd)
         return p
@@ -551,7 +557,7 @@ class Handler(BaseHTTPRequestHandler):
                 s = self._sess()
                 return self._json({'ok': True, 'login': bool(s),
                                    'csrf': s['csrf'] if s else '',
-                                   'user': CFG.get('user', 'admin')})
+                                   'user': CFG.get('user', 'suguang')})
             if p == '/api/status':
                 if not self._require():
                     return
@@ -819,7 +825,7 @@ class Handler(BaseHTTPRequestHandler):
         path = save_password_file(pw)
         # 审计只记事件，绝不记密码本身
         audit('重置管理密码，已注销其他会话 (ip=%s)' % self._client_ip())
-        return self._json({'ok': True, 'pass': pw, 'user': CFG.get('user', 'admin'),
+        return self._json({'ok': True, 'pass': pw, 'user': CFG.get('user', 'suguang'),
                            'file': path})
 
 
@@ -892,7 +898,7 @@ def cli_reset_password(argv):
     path = save_password_file(new)
     print('=' * 56)
     print(' SuguangWebGuard Web 管理密码已重置')
-    print(' 用户名: %s' % CFG.get('user', 'admin'))
+    print(' 用户名: %s' % CFG.get('user', 'suguang'))
     print(' 密  码: %s' % new)
     if not generated:
         print(' （使用你指定的密码）')
@@ -901,7 +907,7 @@ def cli_reset_password(argv):
         print('已写入 %s（0600，抄走后可删除）' % path)
     print('所有登录会话%s' % ('已保留' if keep else '已注销，需要重新登录'))
     print('运行中的服务会在下次登录时自动加载新密码，无需重启。')
-    audit('命令行重置管理密码 user=%s%s' % (CFG.get('user', 'admin'),
+    audit('命令行重置管理密码 user=%s%s' % (CFG.get('user', 'suguang'),
                                            '' if keep else '，已注销所有会话'))
     return 0
 

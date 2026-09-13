@@ -6,6 +6,12 @@ QUAR=/www/SuguangWebGuard/quarantine
 AIDECONF=/www/SuguangWebGuard/aide.conf
 AIDEDB=/www/SuguangWebGuard/aide.db.gz
 
+# 全系统统一北京时间（东八区），不跟随服务器自身时区。
+# 云主机镜像默认多半是 UTC，那样告警日志会比现场人员的手表慢 8 小时——
+# 事后对事故时间线时，差的这 8 小时足够把人绕晕。钉死在这里，
+# 所有 source 了本文件的脚本（watch/lock/unlock/status/aide-check）一并生效。
+export TZ=Asia/Shanghai
+
 get_sites() { grep -E '^\s*SITE=' "$CONF" 2>/dev/null | sed 's/^\s*SITE=//' | tr -d '\r' | sed 's/\s*$//'; }
 
 get_excludes() {
@@ -58,8 +64,14 @@ gen_aide_conf() {
     echo "report_url=file:$LOGDIR/aide-report.log"
     echo "report_url=stdout"
     echo ""
-    echo "# 校验项：权限+inode+链接数+属主+属组+大小+mtime+ctime+md5+sha256+文件类型"
-    echo "WEBFILE = p+i+n+u+g+s+m+c+md5+sha256+ftype"
+    # 刻意不校验 ctime（c）。lock.sh 的 chattr +i 会改掉每一个文件的 ctime，
+    # 于是加锁当晚 AIDE 就报"10 万个文件全变了"——实测 100357 条差异里有
+    # 100356 条只差 ctime，唯一真变的那 1 个反而被埋在里面翻不出来。
+    # 一份没人看得下去的报告等于没有这道防线。
+    # 内容篡改有 md5+sha256+s 兜住，权限属主变动有 p+u+g，文件被整体替换有 i，
+    # 少一个 ctime 不漏检任何实质攻击行为。
+    echo "# 校验项：权限+inode+链接数+属主+属组+大小+mtime+md5+sha256+文件类型"
+    echo "WEBFILE = p+i+n+u+g+s+m+md5+sha256+ftype"
     echo ""
     local s e
     while IFS= read -r s; do

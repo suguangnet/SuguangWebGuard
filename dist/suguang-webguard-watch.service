@@ -3,6 +3,8 @@ Description=SuguangWebGuard realtime watcher (inotify)
 After=network.target
 
 [Service]
+# 日志时间统一北京时间，不受服务器时区影响
+Environment=TZ=Asia/Shanghai
 Type=simple
 ExecStart=/bin/bash -c '/www/SuguangWebGuard/watch.sh >> /www/SuguangWebGuard/logs/watch.log 2>&1'
 Restart=always

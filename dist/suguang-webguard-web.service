@@ -3,6 +3,8 @@ Description=SuguangWebGuard web management UI
 After=network.target
 
 [Service]
+# 日志时间统一北京时间，不受服务器时区影响
+Environment=TZ=Asia/Shanghai
 Type=simple
 ExecStart=/usr/bin/python3 /www/SuguangWebGuard/web/webui.py
 Restart=always
