@@ -516,6 +516,41 @@ PHPOK=runtime/complile              # 允许程序在此生成 .php，监控不�
 - 修改后需重新运行 `lock.sh`；改了 `PHPOK` 还要
   `systemctl restart suguang-webguard-watch`
 
+#### ⚠ EXCLUDE 和 PHPOK 是两件事，最容易配错的地方
+
+`EXCLUDE` 只让 `lock.sh` **跳过加锁**，它**管不着监控隔离**。监控判断一个文件
+要不要隔离只看三件事：扩展名是不是脚本、在不在 `PHPOK` 白名单、有没有 `i` 属性。
+
+所以「`EXCLUDE` 了但没配 `PHPOK`」的目录最危险 —— 里面的 `.php` 既没有锁保护
+（因为被排除了），又不在白名单，**程序一写就被当成新增后门搬进隔离区**。
+
+这不是假想。织梦的 `data/` 下就放着 `safequestions.php`、`downmix.data.php`、
+`enums/*.php` 这些数据文件；帝国的 `e/`、ThinkPHP 的 `runtime/` 同理。生产环境
+实测漏配这一条，一个扫描周期内隔离掉 71 个文件，网站功能当场报错 —— 而告警
+日志看起来像是「拦截了 71 个后门」，属于最难识破的一类误报。
+
+**判断方法**：凡是 `EXCLUDE` 的目录，先看里面有没有程序自带的 `.php`：
+
+```bash
+find /www/wwwroot/你的站点/被排除的目录 -name '*.php' | head
+```
+
+有就必须配上对应的 `PHPOK`。
+
+**系统会自动替你检查**，三处都会报：
+
+- `install.sh` 生成配置之后
+- `lock.sh` 每次加锁之后
+- `status.sh`，以及 Web 界面「配置」页保存 `exclude.conf` 时
+
+也可以随时手工跑一次：
+
+```bash
+cd /www/SuguangWebGuard && . ./common.sh && check_phpok_coverage
+```
+
+无隐患时不输出、返回 0；有隐患会指出是哪个目录、涉及多少文件、该补哪一行。
+
 ### 各类 CMS 的典型配置
 
 **PbootCMS**

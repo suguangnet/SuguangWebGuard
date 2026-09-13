@@ -28,6 +28,61 @@ get_phpok() {
   ' "$CONF" 2>/dev/null
 }
 
+# 配置预检：找出「EXCLUDE 了、里面有 .php、却没有 PHPOK 覆盖」的目录
+#
+# 为什么这是个坑：EXCLUDE 只让 lock.sh 跳过加锁，**管不着监控隔离**。
+# watch.sh 判断一个文件要不要隔离只看三件事——扩展名是不是脚本、在不在
+# PHPOK 白名单、有没有 i 属性。于是这种目录最危险：里面的 .php 既没有锁
+# 保护（被 EXCLUDE 了），又不在白名单，程序一写就被当成新增后门搬走。
+#
+# 这不是假想。织梦的 data/ 下就躺着 safequestions.php、downmix.data.php、
+# enums/*.php 这些数据文件，帝国的 e/data/、ThinkPHP 的 runtime/ 同理。
+# 实测漏配这一条，一个扫描周期内隔离掉 71 个文件，网站功能当场报错，
+# 而告警日志里看起来就像"拦截了 71 个后门"——最坏的一种误报。
+#
+# 注意：这里刻意不看文件当前有没有 i 属性。它是**预检**，回答的是
+# "按这份配置跑起来会怎样"；而按这份配置，EXCLUDE 目录里的文件本来就
+# 不会被加锁。拿加锁现状当判据会在首次安装时漏报。
+#
+# 输出：每条隐患若干行说明；有隐患返回 1，无隐患返回 0（不输出）。
+check_phpok_coverage() {
+  local rc=0 s e d ok p f n examples covered
+  for s in $(get_sites); do
+    [ -d "$s" ] || continue
+    ok=""
+    while IFS= read -r p; do
+      [ -n "$p" ] && ok="$ok $s/${p%/}"
+    done < <(get_phpok "$s")
+
+    while IFS= read -r e; do
+      [ -n "$e" ] || continue
+      d="$s/${e%/}"
+      [ -d "$d" ] || continue
+      n=0; examples=""
+      while IFS= read -r f; do
+        covered=0
+        for p in $ok; do
+          case "$f" in "$p"/*|"$p") covered=1; break;; esac
+        done
+        [ "$covered" = "1" ] && continue
+        n=$((n+1))
+        [ "$n" -le 3 ] && examples="$examples ${f#$d/}"
+        [ "$n" -ge 200 ] && break
+      done < <(find "$d" -type f \( -name '*.php' -o -name '*.phtml' -o -name '*.php5' \) 2>/dev/null)
+
+      if [ "$n" -gt 0 ]; then
+        rc=1
+        [ "$n" -ge 200 ] && n="200+"
+        echo "  [警告] $d"
+        echo "         该目录已 EXCLUDE（不加锁），但其中 $n 个 .php 不在 PHPOK 白名单，"
+        echo "         会被监控当成新增脚本隔离走。例如:$examples"
+        echo "         确认是程序自带的文件，就补一行：PHPOK=${e%/}"
+      fi
+    done < <(get_excludes "$s")
+  done
+  return $rc
+}
+
 # 生成 find 的 prune 参数数组（写入全局 FIND_PRUNE）
 build_prune() {
   local site="$1"; FIND_PRUNE=()

@@ -166,6 +166,10 @@ textarea{min-height:340px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas
           <button id="csave">保存</button>
           <button class="gray" id="creload">重新载入</button>
         </div>
+        <div id="cwarnbox" class="hide" style="margin-top:12px">
+          <div class="k dim small">⚠ 配置预检发现隐患（这些文件会被监控当成新增脚本隔离走）</div>
+          <pre id="cwarn"></pre>
+        </div>
       </div>
     </section>
     <section id="t-tools" class="hide">
@@ -405,7 +409,18 @@ $('#csave').onclick=function(){
   $('#csave').disabled=true;
   api('/api/config',{method:'POST',body:{text:$('#cbox').value}}).then(function(j){
     $('#csave').disabled=false;
-    if(j.ok){toast('已保存，原文件备份为 '+j.backup,'k');load()}else toast(j.msg,'e')})
+    if(j.ok){
+      toast('已保存，原文件备份为 '+j.backup,'k');
+      // EXCLUDE 了却没配 PHPOK 的目录，里面的 .php 会被监控搬走。
+      // 保存的当下就摊开说，别等文件不见了再去翻告警日志。
+      if(j.warn){
+        $('#cwarn').textContent=j.warn;
+        $('#cwarnbox').classList.remove('hide');
+      }else{
+        $('#cwarnbox').classList.add('hide');
+      }
+      load()
+    }else toast(j.msg,'e')})
 }
 
 /* ---------- 工具 ---------- */

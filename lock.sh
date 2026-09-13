@@ -19,5 +19,11 @@ for site in $TARGETS; do
   echo "$(ts) LOCK $site files=$n locked=$locked" >> /www/SuguangWebGuard/logs/action.log
 done
 
+echo
+echo "---- 配置预检 ----"
+if check_phpok_coverage; then
+  echo "  EXCLUDE 与 PHPOK 搭配正常，没有会被误隔离的文件"
+fi
+
 rm -f /www/SuguangWebGuard/.maintenance
 echo "[维护模式] 已关闭：监控守护恢复自动隔离。"

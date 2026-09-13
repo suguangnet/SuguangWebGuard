@@ -353,6 +353,25 @@ def start_job(name, cmd, timeout=900):
 
 # ---------------------------------------------------------------- 数据采集
 
+def phpok_warnings():
+    """跑一遍 common.sh 的配置预检，把警告原样带回界面（多行字符串，无隐患时为空串）。
+
+    判定逻辑只在 common.sh 里写一份 —— 命令行（lock.sh / status.sh）和
+    界面必须给出同一个答案。在这里用 Python 重写一遍 EXCLUDE/PHPOK 的
+    前缀匹配规则，迟早会和 shell 那份走偏，到时候两边各说各话最难查。
+    """
+    try:
+        p = subprocess.Popen(['bash', '-c',
+                              '. %s/common.sh; check_phpok_coverage' % PREFIX],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        out = p.communicate()[0]
+        txt = out.decode('utf-8', 'replace').strip()
+        return txt
+    except Exception:
+        # 预检失败不该挡住保存 —— 配置已经写进去了，这里只是锦上添花
+        return []
+
+
 def parse_exclude_conf():
     """解析 exclude.conf -> [{site, excludes[], phpok[]}]"""
     sites = []
@@ -737,7 +756,11 @@ class Handler(BaseHTTPRequestHandler):
             with open(EXCLUDE_CONF, 'w', encoding='utf-8') as f:
                 f.write(txt)
             audit('修改 exclude.conf (ip=%s，备份 %s)' % (self._client_ip(), os.path.basename(bak)))
-            return self._json({'ok': True, 'backup': os.path.basename(bak)})
+            # 保存成功后立刻预检：EXCLUDE 了却没配 PHPOK 的目录，里面的
+            # .php 会被监控当新增脚本搬走。这个后果必须在此刻就说，
+            # 而不是等用户下次看告警日志时才发现文件不见了。
+            return self._json({'ok': True, 'backup': os.path.basename(bak),
+                               'warn': phpok_warnings()})
         except Exception as e:
             return self._err('保存失败: %s' % e)
 

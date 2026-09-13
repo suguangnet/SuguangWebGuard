@@ -274,6 +274,14 @@ else
   echo "  ---------- 生成的配置 ----------"
   grep -vE '^\s*#|^\s*$' "$PREFIX/exclude.conf" | sed 's/^/  /'
   echo "  --------------------------------"
+  # 探测结果可能给出了 EXCLUDE 却没给对应的 PHPOK（detect.sh 判不出哪些
+  # .php 是程序自带的）。这一步把后果先说清楚，免得装完才发现文件被搬走。
+  echo
+  if . "$PREFIX/common.sh" && check_phpok_coverage; then
+    grn "  配置预检通过：EXCLUDE 与 PHPOK 搭配正常"
+  else
+    ylw "  配置预检发现隐患（见上），请按提示补 PHPOK 后再运行 lock.sh"
+  fi
 fi
 
 # ---------- 6. 系统集成 ----------

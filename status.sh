@@ -26,5 +26,10 @@ fi
 q=$(ls -1 "$QUAR" 2>/dev/null | wc -l)
 echo "  隔离区文件数    : $q  ($QUAR)"
 echo
+echo "---- 配置预检 ----"
+if check_phpok_coverage; then
+  echo "  EXCLUDE 与 PHPOK 搭配正常"
+fi
+echo
 echo "---- 最近 10 条告警 ----"
 tail -n 10 /www/SuguangWebGuard/logs/alert.log 2>/dev/null || echo "  (无)"
