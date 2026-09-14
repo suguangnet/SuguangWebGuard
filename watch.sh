@@ -45,6 +45,30 @@ FUSE_LIMIT=${FUSE_LIMIT:-20}
 # 基线覆盖率阈值（百分比）。低于它就认为加锁基线没建立好。
 BASELINE_MIN=${BASELINE_MIN:-90}
 
+# ---------- 单实例保护 ----------
+# 两个守护实例同时跑会互相拆台：.baseline-ok 是进程间共享的判定缓存，
+# 另一个实例（尤其是拿不同 CONF 跑的临时实例）算出的结果会把它删掉，
+# 正在服役的守护于是被静默压进纯告警模式 —— 看着在跑，实际不拦截。
+#
+# 这不是假想：2026-09-14 一次测试留下的实例，CONF 指向已删除的目录，
+# 每轮算出「加锁数 0」，反复删掉标记，把生产守护的隔离功能关了两小时。
+#
+# 锁由 fd 9 持有，进程退出（含被 KILL）时内核自动释放；sweeper 子进程会
+# 继承这个 fd，所以「主进程死了、sweeper 还在」的残留同样会被挡住 ——
+# 那种情况本来就该让人知道，而不是让两个实例悄悄打架。
+LOCKFILE=$PREFIX/.watch.lock
+exec 9>"$LOCKFILE" || { echo "无法创建锁文件 $LOCKFILE" >&2; exit 1; }
+if ! flock -w 10 9; then
+  {
+    echo "$(ts) [告警] 已有守护实例在运行，本次启动放弃"
+    echo "         同时跑两个实例会互相覆盖基线判定缓存，反而让防护失效。"
+    echo "         排查残留进程： ps -eo pid,lstart,cmd | grep [w]atch.sh"
+    echo "         确认是残留后： kill -KILL <PID>，再 systemctl restart suguang-webguard-watch"
+  } >> "$ALERT"
+  echo "已有守护实例在运行，本次启动放弃（详见 $ALERT）" >&2
+  exit 1
+fi
+
 WATCH_DIRS=$(get_sites | while read -r s; do [ -d "$s" ] && echo "$s"; done)
 [ -z "$WATCH_DIRS" ] && { echo "无可监控站点"; exit 1; }
 

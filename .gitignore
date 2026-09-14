@@ -15,6 +15,7 @@ sessions.json.tmp
 .baseline
 .baseline-ok
 .fuse-tripped
+.watch.lock
 # 由 aide-init.sh 自动生成
 aide.conf
 aide.db.gz
