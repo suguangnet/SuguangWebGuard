@@ -137,7 +137,11 @@ echo "=============================================="
 if [ -n "$KEEP_QUAR" ] || [ -n "$KEEP_LOG_DIR" ]; then
   echo
   echo "已保留的内容（确认无用后可自行删除）："
-  [ -n "$KEEP_QUAR" ]    && echo "  隔离文件: $KEEP_QUAR"
+  [ -n "$KEEP_QUAR" ]    && {
+    echo "  隔离文件: $KEEP_QUAR"
+    echo "            每个子目录是一个批次，manifest.tsv 里记着每个文件的原路径；"
+    echo "            files/ 下是按完整原路径镜像存放的文件，可直接对照着拷回去。"
+  }
   [ -n "$KEEP_LOG_DIR" ] && echo "  历史日志: $KEEP_LOG_DIR"
 fi
 echo

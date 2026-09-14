@@ -288,7 +288,16 @@ function renderDash(d){
      (d.watch_active?'<span class="badge b-ok">运行中</span>':'<span class="badge b-bad">未运行</span>')+'</div></div>';
   h+='<div class="kv"><div class="k">维护模式</div><div class="v">'+
      (d.maintenance?'<span class="badge b-warn">已开启（不隔离）</span>':'<span class="badge b-ok">关闭</span>')+'</div></div>';
-  h+='<div class="kv"><div class="k">隔离区文件</div><div class="v">'+d.quarantine.length+'</div></div>';
+  h+='<div class="kv"><div class="k">加锁基线</div><div class="v">'+
+     (d.baseline&&d.baseline.exists
+        ?'<span class="badge b-ok">已建立</span> <span class="dim small">'+d.baseline.locked+' 个文件</span>'
+        :'<span class="badge b-bad">未建立</span> <span class="dim small">守护只告警不隔离</span>')+'</div></div>';
+  h+='<div class="kv"><div class="k">熔断状态</div><div class="v">'+
+     (d.fused?'<span class="badge b-bad">已熔断</span> <span class="dim small">隔离已停止，见隔离区</span>'
+             :'<span class="badge b-ok">正常</span>')+'</div></div>';
+  var qtot=0; d.quarantine.forEach(function(b){qtot+=b.pending});
+  h+='<div class="kv"><div class="k">隔离区</div><div class="v">'+d.quarantine.length+
+     ' 个批次 <span class="dim small">待恢复 '+qtot+' 个文件</span></div></div>';
   h+='<div class="kv"><div class="k">AIDE 基线</div><div class="v small" style="font-weight:400">'+
      (d.aide_baseline?esc(d.aide_baseline):'<span class="dim">未建立</span>')+'</div></div>';
   h+='</div><div class="row" style="margin-top:14px">';
@@ -322,50 +331,98 @@ function renderDash(d){
   $('#t-dash').innerHTML=h;
 }
 
-/* ---------- 隔离区 ---------- */
+/* ---------- 隔离区 ----------
+   一次隔离动作 = 一个批次，批次内按完整原路径镜像存放文件。
+   不同站点的同名文件（index.php / config.php / app.php）因此不会互相覆盖；
+   恢复也不需要人工指认原路径 —— 路径就记在批次的 manifest 里。        */
 function renderQuar(d){
+  var tot=0,pend=0;
+  d.quarantine.forEach(function(b){tot+=b.count;pend+=b.pending});
   var h='<div class="card"><h2>隔离区 <span class="dim small">'+
-        d.quarantine.length+' 个文件</span></h2>';
-  h+='<p class="dim small">监控守护拦下的新增脚本文件。误杀了可以直接恢复到原路径（会自动加锁）。'+
-     '原路径见告警日志。</p>';
+        d.quarantine.length+' 个批次 · 共 '+tot+' 个文件，'+pend+' 个待恢复</span></h2>';
+  if(d.fused){
+    h+='<p style="color:#d33;font-weight:600">⚠ 熔断已触发：单轮隔离数超过阈值，守护已停止隔离、转为只记录。'+
+       '这通常说明判据失灵（例如解锁后忘了重新加锁），而不是真来了这么多马。'+
+       '请确认下面的批次，属于误判就整批恢复，然后重新加锁并重启守护以解除熔断。</p>';
+  }
+  h+='<p class="dim small">恢复时逐个校验 md5、还原属主与权限；原路径若已有文件会跳过、不覆盖；'+
+     '属于应加锁范围的文件恢复后自动重新加锁。</p>';
   if(!d.quarantine.length){h+='<p class="dim">暂无</p></div>';$('#t-quar').innerHTML=h;return}
-  h+='<table><tr><th>文件</th><th>大小</th><th>隔离时间</th><th style="width:190px">操作</th></tr>';
-  d.quarantine.forEach(function(q){
-    h+='<tr><td class="mono">'+esc(q.name)+'</td><td>'+q.size+' B</td><td class="dim">'+esc(q.time)+'</td><td>'+
-       '<button class="gray sm" onclick="qview(\''+esc(q.name)+'\')">查看</button> '+
-       '<button class="gray sm" onclick="qrestore(\''+esc(q.name)+'\')">恢复</button> '+
-       '<button class="bad sm" onclick="qdel(\''+esc(q.name)+'\')">删除</button></td></tr>';
+  d.quarantine.forEach(function(b){
+    var eb=encodeURIComponent(b.batch);
+    h+='<div class="kv" style="display:block;margin-bottom:12px">';
+    h+='<div class="row" style="justify-content:space-between;align-items:flex-start">';
+    h+='<div><b class="mono">'+esc(b.batch)+'</b> <span class="dim small">'+esc(b.time)+'</span>'+
+       '<br><span class="small">'+b.count+' 个文件（待恢复 '+b.pending+'） · 站点: '+
+       esc(b.sites.join(', ')||'-')+'</span></div>';
+    h+='<div style="text-align:right">';
+    if(b.pending>0){
+      h+='<button class="sm" onclick="qrestore(\''+eb+'\',\'\')">整批恢复</button> ';
+      if(b.sites.length>1){
+        b.sites.forEach(function(s){
+          h+='<button class="gray sm" onclick="qrestore(\''+eb+'\',\''+encodeURIComponent(s)+'\')">只恢复 '+esc(s)+'</button> ';
+        });
+      }
+    }
+    h+='<button class="gray sm" onclick="qtoggle(\''+eb+'\')">文件清单</button> ';
+    h+='<button class="bad sm" onclick="qdel(\''+eb+'\')">删除批次</button>';
+    h+='</div></div>';
+    h+='<div id="qf-'+esc(b.batch)+'" class="hide" style="margin-top:10px">';
+    h+='<table><tr><th>原路径</th><th>大小</th><th>发现方式</th><th>状态</th><th>操作</th></tr>';
+    (b.files||[]).forEach(function(f){
+      var st=f.pending?'<span class="badge b-warn">待恢复</span>'
+                      :(f.restored?'<span class="badge b-ok">已恢复</span>'
+                                  :'<span class="dim small">已不在隔离区</span>');
+      h+='<tr><td class="mono small">'+esc(f.path)+'</td><td class="small">'+esc(f.size)+' B</td>'+
+         '<td class="dim small">'+esc(f.from)+'</td><td>'+st+'</td><td>'+
+         (f.pending?'<button class="gray sm" onclick="qview(\''+eb+'\',\''+encodeURIComponent(f.path)+'\')">查看</button>':'')+
+         '</td></tr>';
+    });
+    h+='</table></div></div>';
   });
-  h+='</table></div>';
+  h+='</div>';
   $('#t-quar').innerHTML=h;
 }
-function qview(n){
-  api('/api/quarantine/view?name='+encodeURIComponent(n)).then(function(j){
-    if(!j.ok)return toast(j.msg,'e');
-    modal('隔离文件内容 · '+n,'<pre>'+esc(j.text)+'</pre>')})
+function qtoggle(b){
+  var e=document.getElementById('qf-'+decodeURIComponent(b));
+  if(e)e.classList.toggle('hide');
 }
-function qrestore(n){
-  var guess=n.replace(/^\d{8}-\d{6}-\d+-/,'');
-  modal('恢复隔离文件','<p class="dim small">恢复过程会临时停止监控守护，写回后自动加 <code>chattr +i</code> 并重启守护。'+
-    '目标路径必须在 <code>/www/</code> 下。</p>'+
-    '<label>原文件完整路径</label><input id="rdest" value="/www/wwwroot/'+esc(guess)+'">'+
+function qview(b,p){
+  b=decodeURIComponent(b);p=decodeURIComponent(p);
+  api('/api/quarantine/view?batch='+encodeURIComponent(b)+'&path='+encodeURIComponent(p)).then(function(j){
+    if(!j.ok)return toast(j.msg,'e');
+    modal('隔离文件内容 · '+p,'<pre>'+esc(j.text)+'</pre>')})
+}
+function qrestore(b,site){
+  b=decodeURIComponent(b); site=site?decodeURIComponent(site):'';
+  var what=site?('站点 <code>'+esc(site)+'</code> 的文件'):'全部文件';
+  modal('恢复隔离文件',
+    '<p>将把批次 <code class="mono">'+esc(b)+'</code> 中的 '+what+' 恢复到各自的原路径。</p>'+
+    '<p class="dim small">逐个校验 md5 后写回，还原属主与权限；原路径已存在文件的会跳过、不覆盖；'+
+    '属于应加锁范围的会自动重新 <code>chattr +i</code>。</p>'+
     '<div class="row" style="margin-top:16px"><button id="rgo">确认恢复</button>'+
     '<button class="gray" onclick="closeModal()">取消</button></div>',
     function(){
       $('#rgo').onclick=function(){
-        var dest=$('#rdest').value.trim(); $('#rgo').disabled=true;
-        api('/api/quarantine/restore',{method:'POST',body:{name:n,dest:dest}}).then(function(j){
+        $('#rgo').disabled=true;
+        api('/api/quarantine/restore',{method:'POST',body:{batch:b,site:site}}).then(function(j){
           $('#rgo').disabled=false;
-          if(j.ok){toast(j.msg,'k');closeModal();load()}else toast(j.msg,'e')})
+          if(!j.ok)return toast(j.msg,'e');
+          closeModal(); toast('恢复任务已提交，执行中…');
+          if(j.job)poll(j.job);
+        })
       }
     })
 }
-function qdel(n){
-  modal('删除隔离文件','<p>确定永久删除 <code class="mono">'+esc(n)+'</code>？此操作不可撤销。</p>'+
+function qdel(b){
+  b=decodeURIComponent(b);
+  modal('删除隔离批次',
+    '<p>确定永久删除批次 <code class="mono">'+esc(b)+'</code>？</p>'+
+    '<p class="dim small">批次里尚未恢复的文件会一并删除，manifest 记录也会消失，此操作不可撤销。</p>'+
     '<div class="row" style="margin-top:16px"><button class="bad" id="dgo2">确认删除</button>'+
     '<button class="gray" onclick="closeModal()">取消</button></div>',
     function(){$('#dgo2').onclick=function(){
-      api('/api/quarantine/delete',{method:'POST',body:{name:n}}).then(function(j){
+      api('/api/quarantine/delete',{method:'POST',body:{batch:b}}).then(function(j){
         if(j.ok){toast('已删除','k');closeModal();load()}else toast(j.msg,'e')})}})
 }
 

@@ -11,6 +11,10 @@ web-initial-password.txt
 sessions.json
 sessions.json.tmp
 .maintenance
+# 加锁基线快照与守护的运行时状态标记
+.baseline
+.baseline-ok
+.fuse-tripped
 # 由 aide-init.sh 自动生成
 aide.conf
 aide.db.gz

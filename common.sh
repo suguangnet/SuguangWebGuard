@@ -1,10 +1,31 @@
 #!/bin/bash
 # SuguangWebGuard 公共库：配置解析、find 排除表达式、AIDE 配置生成
-CONF="${CONF:-/www/SuguangWebGuard/exclude.conf}"
-LOGDIR=/www/SuguangWebGuard/logs
-QUAR=/www/SuguangWebGuard/quarantine
-AIDECONF=/www/SuguangWebGuard/aide.conf
-AIDEDB=/www/SuguangWebGuard/aide.db.gz
+PREFIX=/www/SuguangWebGuard
+CONF="${CONF:-$PREFIX/exclude.conf}"
+LOGDIR=$PREFIX/logs
+QUAR=$PREFIX/quarantine
+AIDECONF=$PREFIX/aide.conf
+AIDEDB=$PREFIX/aide.db.gz
+
+# ---------------------------------------------------------------------------
+# 隔离区结构（2026-09-13 重做）
+#
+#   quarantine/
+#   └── 20260913-204710/                  一次隔离动作 = 一个批次目录
+#       ├── manifest.tsv                  原路径│大小│md5│属主:组│权限│时间│来源
+#       └── files/
+#           └── www/wwwroot/
+#               ├── bjuba.com.cn/index.php        完整路径镜像
+#               └── bjuba.cn/index.php            同名，但不冲突
+#
+# 为什么是这个结构：旧版命名为「时间戳-PID-文件名」，只保留了 basename。
+# 批量扫描时时间戳（秒级）和 PID 都是常量，不同站点的同名文件——index.php、
+# config.php、app.php——目标名完全一致，mv 静默覆盖，先隔离的那个内容永久丢失。
+# 2026-09-13 那次 26363 次隔离只剩下 24970 个文件，1285 个文件因此救不回来。
+#
+# 用完整路径做镜像，路径即身份，物理上不可能撞名；恢复时路径自带归属，
+# 不需要去解析 alert.log —— manifest 跟着批次目录走，日志轮转也丢不了。
+# ---------------------------------------------------------------------------
 
 # 全系统统一北京时间（东八区），不跟随服务器自身时区。
 # 云主机镜像默认多半是 UTC，那样告警日志会比现场人员的手表慢 8 小时——
@@ -93,6 +114,39 @@ build_prune() {
     else FIND_PRUNE+=( '-o' '-path' "$site/$e" ); fi
   done < <(get_excludes "$site")
   if [ $first -eq 0 ]; then FIND_PRUNE+=( ')' '-prune' '-o' ); fi
+}
+
+# 判断一个绝对路径是否落在「应加锁」范围内（即：属于某个 SITE，且不在它的
+# 任何 EXCLUDE 目录之下）。restore.sh 据此决定恢复后要不要重新 chattr +i：
+# 应锁范围内的文件恢复后必须加锁，否则守护下一轮扫描又会把它当新增脚本；
+# 而 EXCLUDE 里的文件（data/runtime、storage 这些）绝不能加锁，一锁程序就写不动了。
+in_lock_scope() {
+  local f="$1" site e ex
+  for site in $(get_sites); do
+    case "$f" in "$site"/*) ;; *) continue ;; esac
+    while IFS= read -r e; do
+      [ -n "$e" ] || continue
+      ex="$site/${e%/}"
+      case "$f" in "$ex"/*|"$ex") return 1 ;; esac
+    done < <(get_excludes "$site")
+    return 0
+  done
+  return 1
+}
+
+# 判断一个绝对路径是否在 PHPOK 白名单内（守护不会隔离白名单里的脚本）
+in_phpok() {
+  local f="$1" site p ok
+  for site in $(get_sites); do
+    case "$f" in "$site"/*) ;; *) continue ;; esac
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      ok="$site/${p%/}"
+      case "$f" in "$ok"/*|"$ok") return 0 ;; esac
+    done < <(get_phpok "$site")
+    return 1
+  done
+  return 1
 }
 
 # 统计"应锁范围内"实际带 i 属性的文件数

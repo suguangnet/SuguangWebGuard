@@ -12,6 +12,7 @@ import sys
 import json
 import time
 import shlex
+import shutil
 import hmac
 import base64
 import hashlib
@@ -34,6 +35,10 @@ WEBDIR = os.path.join(PREFIX, 'web')
 CONF = os.path.join(PREFIX, 'web.conf')
 EXCLUDE_CONF = os.path.join(PREFIX, 'exclude.conf')
 QUAR = os.path.join(PREFIX, 'quarantine')
+MAINT_FLAG = os.path.join(PREFIX, '.maintenance')
+BASE_FLAG = os.path.join(PREFIX, '.baseline')
+FUSE_FLAG = os.path.join(PREFIX, '.fuse-tripped')
+RESTORE_SH = os.path.join(PREFIX, 'restore.sh')
 LOGDIR = '/www/SuguangWebGuard/logs'
 ACTION_LOG = os.path.join(LOGDIR, 'action.log')
 ALERT_LOG = os.path.join(LOGDIR, 'alert.log')
@@ -436,6 +441,86 @@ def svc_active(name):
     return out.strip() == 'active'
 
 
+def site_of(path, sites):
+    """从绝对路径取出站点目录名。按配置里的 SITE 剥离，取不到再退回路径第 4 段。"""
+    for s in sites:
+        s = s.rstrip('/')
+        if path.startswith(s + '/'):
+            return path[len(s) + 1:].split('/')[0]
+    parts = path.split('/')
+    return parts[3] if len(parts) > 4 else ''
+
+
+def read_baseline():
+    """读 lock.sh 留下的加锁基线快照。守护靠它确认隔离判据的前提成立。"""
+    fp = os.path.join(PREFIX, '.baseline')
+    if not os.path.exists(fp):
+        return {'exists': False}
+    info = {'exists': True}
+    try:
+        with open(fp, encoding='utf-8', errors='replace') as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith('#') or '=' not in line:
+                    continue
+                k, v = line.split('=', 1)
+                info[k.strip()] = v.strip()
+    except Exception:
+        pass
+    try:
+        info['locked'] = int(info.get('locked', 0))
+    except ValueError:
+        info['locked'] = 0
+    return info
+
+
+def read_batches(sites, with_files=True):
+    """列出隔离批次。
+
+    批次目录结构见 common.sh 顶部：<批次>/manifest.tsv + <批次>/files/<完整路径镜像>。
+    目录里没有 manifest.tsv 的一概跳过 —— 那是 2026-09-13 之前旧格式留下的散文件，
+    没有原路径信息，无法按批次展示，也不该混进来。
+    """
+    out = []
+    if not os.path.isdir(QUAR):
+        return out
+    for fn in sorted(os.listdir(QUAR), reverse=True):
+        bd = os.path.join(QUAR, fn)
+        man = os.path.join(bd, 'manifest.tsv')
+        if not os.path.isfile(man):
+            continue
+        files, seen = [], set()
+        try:
+            with open(man, encoding='utf-8', errors='replace') as f:
+                for line in f:
+                    if line.startswith('#') or not line.strip():
+                        continue
+                    c = line.rstrip('\n').split('\t')
+                    if len(c) < 7:
+                        continue
+                    src = c[0]
+                    seen.add(site_of(src, sites))
+                    files.append({
+                        'path': src, 'size': c[1], 'md5': c[2], 'owner': c[3],
+                        'perm': c[4], 'time': c[5], 'from': c[6],
+                        'pending': os.path.isfile(bd + '/files' + src),
+                        'restored': os.path.exists(src),
+                    })
+        except Exception:
+            continue
+        item = {
+            'batch': fn,
+            'count': len(files),
+            'pending': sum(1 for x in files if x['pending']),
+            'sites': sorted(x for x in seen if x),
+            'time': files[0]['time'] if files else '',
+        }
+        if with_files:
+            item['files'] = files
+        out.append(item)
+    return out
+
+
 def collect_status(fast=False):
     sites = parse_exclude_conf()
     out = []
@@ -456,17 +541,7 @@ def collect_status(fast=False):
             item['state'] = 'unknown'
         out.append(item)
 
-    q = []
-    if os.path.isdir(QUAR):
-        for fn in sorted(os.listdir(QUAR), reverse=True):
-            fp = os.path.join(QUAR, fn)
-            try:
-                st = os.stat(fp)
-                q.append({'name': fn, 'size': st.st_size,
-                          'time': time.strftime('%Y-%m-%d %H:%M:%S',
-                                                time.localtime(st.st_mtime))})
-            except Exception:
-                pass
+    q = read_batches([s['site'] for s in sites])
 
     maint = os.path.exists(os.path.join(PREFIX, '.maintenance'))
     aide_db = '/www/SuguangWebGuard/aide.db.gz'
@@ -475,6 +550,8 @@ def collect_status(fast=False):
         'sites': out,
         'quarantine': q,
         'maintenance': maint,
+        'baseline': read_baseline(),
+        'fused': os.path.exists(FUSE_FLAG),
         'watch_active': svc_active('suguang-webguard-watch'),
         'aide_baseline': (time.strftime('%Y-%m-%d %H:%M:%S',
                                         time.localtime(os.path.getmtime(aide_db)))
@@ -603,13 +680,14 @@ class Handler(BaseHTTPRequestHandler):
             if p == '/api/quarantine/view':
                 if not self._require():
                     return
-                name = q.get('name', [''])[0]
-                fp = self._quar_path(name)
+                batch = q.get('batch', [''])[0]
+                path = q.get('path', [''])[0]
+                fp = self._quar_file(batch, path)
                 if not fp:
                     return self._err('文件不存在')
                 with open(fp, 'rb') as f:
                     data = f.read(200000)
-                return self._json({'ok': True,
+                return self._json({'ok': True, 'path': path,
                                    'text': data.decode('utf-8', 'replace')})
             if p.startswith('/api/job/'):
                 if not self._require():
@@ -764,53 +842,63 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._err('保存失败: %s' % e)
 
-    def _quar_path(self, name):
-        if not name or '/' in name or '..' in name:
+    def _valid_batch(self, batch):
+        """批次名必须是隔离区下的一个直接子目录，且带 manifest.tsv。"""
+        if not batch or '/' in batch or '..' in batch:
+            return False
+        return os.path.isfile(os.path.join(QUAR, batch, 'manifest.tsv'))
+
+    def _quar_file(self, batch, path):
+        """取批次里某个被隔离文件的实际存放位置（路径镜像）。"""
+        if not self._valid_batch(batch):
             return None
-        fp = os.path.join(QUAR, name)
-        if not os.path.isfile(fp):
+        if not path or not path.startswith('/') or '..' in path:
             return None
-        return fp
+        fp = os.path.join(QUAR, batch, 'files') + path
+        # 防目录穿越：拼出来的真实路径必须仍在该批次的 files 子树内
+        base = os.path.realpath(os.path.join(QUAR, batch, 'files'))
+        real = os.path.realpath(fp)
+        if not (real == base or real.startswith(base + '/')):
+            return None
+        return fp if os.path.isfile(fp) else None
 
     def _quar_restore(self, s):
+        """恢复一个批次（可限定站点）。
+
+        恢复逻辑只在 restore.sh 里写一份，界面调它而不是自己实现一遍：
+        md5 校验、冲突不覆盖、属主权限还原、应锁范围内重新加锁 —— 这些规则
+        两边各写一份迟早走偏，而走偏的代价是把错误内容写回生产站点。
+        旧版界面要求调用方手工填 dest（原路径），系统自己都不知道文件原来在哪，
+        2.6 万个文件根本没法恢复。现在原路径在 manifest 里，不需要人来提供。
+        """
         b = self._body()
-        name = b.get('name', '')
-        dest = b.get('dest', '')
-        fp = self._quar_path(name)
-        if not fp:
-            return self._err('隔离文件不存在')
-        if not dest or not dest.startswith('/www/'):
-            return self._err('目标路径必须在 /www/ 下')
-        if '..' in dest:
-            return self._err('目标路径非法')
-        d = os.path.dirname(dest)
-        if not os.path.isdir(d):
-            return self._err('目标目录不存在: %s' % d)
-        try:
-            run(['systemctl', 'stop', 'suguang-webguard-watch'], timeout=60)
-            with open(fp, 'rb') as f:
-                data = f.read()
-            with open(dest, 'wb') as f:
-                f.write(data)
-            run(['chown', 'www:www', dest], timeout=30)
-            run(['chattr', '+i', dest], timeout=30)
-            os.remove(fp)
-            audit('恢复隔离文件 %s -> %s (ip=%s)' % (name, dest, self._client_ip()))
-            return self._json({'ok': True, 'msg': '已恢复到 %s 并重新加锁' % dest})
-        except Exception as e:
-            return self._err('恢复失败: %s' % e)
-        finally:
-            run(['systemctl', 'start', 'suguang-webguard-watch'], timeout=60)
+        batch = b.get('batch', '')
+        site = b.get('site', '')
+        if not self._valid_batch(batch):
+            return self._err('批次不存在')
+        if site and ('/' in site or '..' in site):
+            return self._err('站点名非法')
+        cmd = [RESTORE_SH, batch] + ([site] if site else [])
+        audit('恢复隔离批次 %s%s (ip=%s)'
+              % (batch, (' 站点=' + site) if site else '', self._client_ip()))
+        jid = start_job('恢复隔离批次', cmd, timeout=1800)
+        return self._json({'ok': True, 'job': jid})
 
     def _quar_delete(self, s):
+        """永久删除一个批次（连同里面还没恢复的文件）。"""
         b = self._body()
-        name = b.get('name', '')
-        fp = self._quar_path(name)
-        if not fp:
-            return self._err('隔离文件不存在')
+        batch = b.get('batch', '')
+        if not self._valid_batch(batch):
+            return self._err('批次不存在')
+        bd = os.path.join(QUAR, batch)
         try:
-            os.remove(fp)
-            audit('删除隔离文件 %s (ip=%s)' % (name, self._client_ip()))
+            # 恢复过的文件会被重新加锁，批次目录里残留的副本不会带 +i；
+            # 但以防万一（例如有人手工 chattr 过），先清一遍属性再删。
+            run(['bash', '-c',
+                 "find %s -type f -print0 | xargs -0 -r chattr -i 2>/dev/null; true"
+                 % shlex.quote(bd)], timeout=120)
+            shutil.rmtree(bd)
+            audit('删除隔离批次 %s (ip=%s)' % (batch, self._client_ip()))
             return self._json({'ok': True})
         except Exception as e:
             return self._err('删除失败: %s' % e)

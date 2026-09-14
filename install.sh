@@ -8,7 +8,7 @@
 #   --site <路径>   要保护的站点根目录，可重复指定
 #                   例: --site /www/wwwroot/a.com --site /www/wwwroot/b.com
 #   --days <N>      探测可写目录时回溯的天数（默认 90）
-#   --lock          安装完成后立即加锁（默认不加锁，留给你先核对配置）
+#   --no-lock       装完不加锁（默认加锁；不加锁守护只会告警不会隔离）
 #   --port <N>      Web 管理界面端口（默认 19196）
 #   --no-web        不安装 Web 管理界面
 #   --no-aide       不安装 AIDE 完整性核查
@@ -31,7 +31,10 @@ LOGROT=/etc/logrotate.d/suguang-webguard
 WEBCONF=$PREFIX/web.conf
 SRC="$(cd "$(dirname "$0")" && pwd)"
 
-DO_LOCK=0; DO_AIDE=1; DO_WEB=1; ASSUME_YES=0; DAYS=90; WEBPORT=19196; PORT_SET=0
+# DO_LOCK 默认开。2026-09-13 的事故里它默认是 0：装完守护就上岗了，而加锁
+# 要人工另跑一次 —— 于是守护在「全站没有一个文件带 +i」的状态下开始工作，
+# 把每一个 .php 都判成新增后门。加锁是隔离判据成立的前提，不该是可选项。
+DO_LOCK=1; DO_AIDE=1; DO_WEB=1; ASSUME_YES=0; DAYS=90; WEBPORT=19196; PORT_SET=0
 SITES=()
 
 red(){ printf '\033[31m%s\033[0m\n' "$*"; }
@@ -48,6 +51,7 @@ while [ $# -gt 0 ]; do
     --days) shift; DAYS="$1";;
     --port) shift; WEBPORT="$1"; PORT_SET=1;;
     --lock) DO_LOCK=1;;
+    --no-lock) DO_LOCK=0;;
     --no-web) DO_WEB=0;;
     --no-aide) DO_AIDE=0;;
     --yes|-y) ASSUME_YES=1;;
@@ -91,7 +95,7 @@ else
   ylw "  /tmp 不支持 immutable（可能是 tmpfs），将在站点目录上验证"
 fi
 
-NEED="common.sh lock.sh unlock.sh status.sh watch.sh detect.sh aide-init.sh aide-check.sh reset-password.sh"
+NEED="common.sh lock.sh unlock.sh restore.sh status.sh watch.sh detect.sh aide-init.sh aide-check.sh reset-password.sh"
 for f in $NEED; do
   [ -f "$SRC/$f" ] || die "源目录缺少 $f，请确认解压完整"
 done
@@ -307,15 +311,25 @@ systemctl daemon-reload
 grn "  systemd unit: $UNIT"
 grn "  logrotate: $LOGROT"
 
-# ---------- 7. 启动守护 ----------
-step "7/9 启动实时监控守护"
-systemctl enable suguang-webguard-watch >/dev/null 2>&1
-systemctl restart suguang-webguard-watch
-sleep 2
-if systemctl is-active suguang-webguard-watch >/dev/null 2>&1; then
-  grn "  suguang-webguard-watch 运行中（已设置开机自启）"
+# ---------- 7. 加锁 + AIDE 基线 ----------
+# 必须排在「启动守护」之前。守护判断一个文件是不是新增后门，唯一依据就是
+# 它有没有 +i 属性；基线没建立时全站文件都没有 +i，判据对每一个文件都成立。
+# 2026-09-13 的事故就是顺序反了：守护先上岗，5 分钟搬走 26363 个正常文件。
+step "7/9 加锁与基线"
+if [ "$DO_LOCK" = "1" ]; then
+  "$PREFIX/lock.sh"
 else
-  red "  suguang-webguard-watch 启动失败: journalctl -u suguang-webguard-watch -n 30"
+  ylw "  按 --no-lock 要求跳过加锁。"
+  ylw "  注意：没有加锁基线，守护只会告警、不会隔离（这是刻意的保护）。"
+  echo "      核对 $PREFIX/exclude.conf 后执行: $PREFIX/lock.sh"
+fi
+
+if [ "$DO_AIDE" = "1" ]; then
+  if confirm "  现在建立 AIDE 完整性基线？（站点文件多时需要几分钟）"; then
+    "$PREFIX/aide-init.sh"
+  else
+    ylw "  已跳过。之后请手工执行: $PREFIX/aide-init.sh"
+  fi
 fi
 
 # ---------- 8. Web 管理界面 ----------
@@ -371,21 +385,23 @@ PYEOF
   fi
 fi
 
-# ---------- 9. 加锁 + AIDE 基线 ----------
-step "9/9 加锁与基线"
-if [ "$DO_LOCK" = "1" ]; then
-  "$PREFIX/lock.sh"
-else
-  ylw "  未加锁（默认行为）。请先核对 exclude.conf，确认无误后执行:"
-  echo "      $PREFIX/lock.sh"
-fi
-
-if [ "$DO_AIDE" = "1" ]; then
-  if confirm "  现在建立 AIDE 完整性基线？（站点文件多时需要几分钟）"; then
-    "$PREFIX/aide-init.sh"
-  else
-    ylw "  已跳过。之后请手工执行: $PREFIX/aide-init.sh"
+# ---------- 9. 启动守护 ----------
+# 放在最后：此时加锁基线已经建立（第 7 步），守护的隔离判据才是成立的。
+# 若第 7 步被 --no-lock 跳过，守护会在启动自检时发现基线不完整，
+# 自动以纯告警模式运行，不会移动任何文件。
+step "9/9 启动实时监控守护"
+systemctl enable suguang-webguard-watch >/dev/null 2>&1
+systemctl restart suguang-webguard-watch
+sleep 2
+if systemctl is-active suguang-webguard-watch >/dev/null 2>&1; then
+  grn "  suguang-webguard-watch 运行中（已设置开机自启）"
+  sleep 1
+  if grep -q '纯告警模式' "$LOGDIR/alert.log" 2>/dev/null \
+     && [ "$(tail -20 "$LOGDIR/alert.log" 2>/dev/null | grep -c '纯告警模式')" -gt 0 ]; then
+    ylw "  守护处于纯告警模式（加锁基线不完整），执行 lock.sh 后自动恢复隔离功能"
   fi
+else
+  red "  suguang-webguard-watch 启动失败: journalctl -u suguang-webguard-watch -n 30"
 fi
 
 echo
@@ -397,6 +413,7 @@ echo "常用命令:"
 echo "  $PREFIX/status.sh      查看保护状态"
 echo "  $PREFIX/unlock.sh      解锁（改网站前跑）"
 echo "  $PREFIX/lock.sh        加锁（改完后跑）"
+echo "  $PREFIX/restore.sh     从隔离区恢复文件（--list 看批次）"
 echo "  $PREFIX/aide-init.sh   重建完整性基线"
 echo "  $PREFIX/uninstall.sh   卸载"
 echo

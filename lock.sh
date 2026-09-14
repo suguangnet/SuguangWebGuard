@@ -19,6 +19,31 @@ for site in $TARGETS; do
   echo "$(ts) LOCK $site files=$n locked=$locked" >> /www/SuguangWebGuard/logs/action.log
 done
 
+# 基线值统计的是【全部 SITE】的加锁总数，而不只是本次加锁的目标。
+# lock.sh 允许只加锁单个站点，若按本次目标记数，基线值会缩水成一个站的量，
+# 之后守护拿它当分母就失去意义了。
+TOTAL_LOCKED=0
+for s in $(get_sites); do
+  [ -d "$s" ] || continue
+  TOTAL_LOCKED=$((TOTAL_LOCKED + $(count_locked "$s")))
+done
+
+# 写下加锁基线快照。守护用它判断「隔离判据成立的前提是否存在」。
+#
+# 为什么不让守护自己去算加锁覆盖率：覆盖率的分母是当前文件总数，而新增文件
+# 会把分母顶大。实测 100 个已锁文件的站点里突然出现 30 个新文件，覆盖率就掉到
+# 77%，守护会误判成「基线没建立」而停止隔离 —— 等于攻击者一次多传些文件就能
+# 让防护自己关掉。把加锁那一刻的数量固定下来当分母，新增文件就影响不了这个判断。
+BASEFILE=$PREFIX/.baseline
+{
+  echo "# SuguangWebGuard 加锁基线快照，由 lock.sh 生成，unlock.sh 删除"
+  echo "# 守护(watch.sh)据此确认加锁基线确实建立过，不要手工编辑"
+  echo "locked=$TOTAL_LOCKED"
+  echo "time=$(ts)"
+  echo "sites=$(echo $TARGETS | tr '\n' ' ')"
+} > "$BASEFILE"
+chmod 600 "$BASEFILE"
+
 echo
 echo "---- 配置预检 ----"
 if check_phpok_coverage; then
