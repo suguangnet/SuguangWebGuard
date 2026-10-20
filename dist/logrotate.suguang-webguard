@@ -1,5 +1,6 @@
 /www/SuguangWebGuard/logs/*.log {
     weekly
+    maxsize 50M
     rotate 12
     compress
     delaycompress

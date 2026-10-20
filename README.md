@@ -345,7 +345,7 @@ tail -3 /www/SuguangWebGuard/logs/alert.log
 /etc/systemd/system/suguang-webguard-watch.service   实时监控守护服务
 /etc/systemd/system/suguang-webguard-web.service     Web 管理界面服务
 /etc/cron.d/suguang-webguard                         每日核查定时任务
-/etc/logrotate.d/suguang-webguard                    日志轮转（每周，保留 12 份）
+/etc/logrotate.d/suguang-webguard                    日志轮转（每周或超过 50M，保留 12 份）
 ```
 
 ### 为什么放在 /www 下是安全的
@@ -433,7 +433,7 @@ tail -3 /www/SuguangWebGuard/logs/alert.log
 | `/etc/systemd/system/suguang-webguard-watch.service` | 实时监控守护服务 |
 | `/etc/systemd/system/suguang-webguard-web.service` | Web 管理界面服务 |
 | `/etc/cron.d/suguang-webguard` | 每日 04:17 完整性核查 |
-| `/etc/logrotate.d/suguang-webguard` | 日志轮转（每周，保留 12 份） |
+| `/etc/logrotate.d/suguang-webguard` | 日志轮转（每周或超过 50M，保留 12 份） |
 
 ### 四、对系统的其他改动（不是文件）
 
@@ -604,6 +604,17 @@ PHPOK=e/data/tmp
 ```
 2026-09-05 01:30:10 [维护模式-仅记录] 脚本文件变动(实时): /www/wwwroot/suguang.cc/core/basic/Check.php
 ```
+
+维护模式的日志量是受控的：
+
+- 定期扫描只记录解锁（`.maintenance` 创建）之后**真正改过**的脚本，没动过的不记；
+- 同一个文件、同一个修改时间只记一次，不会每 60 秒重复刷；
+- 单轮扫描最多逐条记录 200 条（环境变量 `MAINT_LOG_CAP` 可调），其余汇总成一行
+  「本轮另有 N 个脚本文件变动未逐条记录」。
+
+> 早期版本没有这些限制：全部解锁后忘了加锁，26 个站约 15 万个文件每轮都被记一遍，
+> 5 天写出 18G 的 `alert.log`，把磁盘写满，MySQL 随之停摆。
+> **改完文件请尽快运行 `lock.sh`**，长期停留在维护模式等于没有防护。
 
 ---
 
@@ -814,7 +825,7 @@ tail -f /www/SuguangWebGuard/logs/web.log  # 访问与操作日志
 └── web.log           Web 界面访问与操作
 ```
 
-轮转策略：每周一次，保留 12 份，压缩。
+轮转策略：每周一次，单个日志超过 50M 时提前轮转，保留 12 份，压缩。
 同时写 syslog，可用 `grep suguang-webguard /var/log/messages` 查看。
 
 `alert.log` 的记录类型：

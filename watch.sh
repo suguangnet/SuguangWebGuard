@@ -19,6 +19,8 @@ mkdir -p "$QUAR" "$LOGDIR"
 ALERT=$LOGDIR/alert.log
 MAINT=/www/SuguangWebGuard/.maintenance
 SWEEP_INTERVAL=${SWEEP_INTERVAL:-60}
+# 维护模式下单轮定期扫描最多逐条记录多少个文件，其余汇总成一行
+MAINT_LOG_CAP=${MAINT_LOG_CAP:-200}
 
 WATCH_DIRS=$(get_sites | while read -r s; do [ -d "$s" ] && echo "$s"; done)
 [ -z "$WATCH_DIRS" ] && { echo "无可监控站点"; exit 1; }
@@ -51,10 +53,12 @@ should_quarantine() {
 }
 
 # 隔离一个文件。$2 为来源标记（实时 / 定期扫描）
+# $3=1 表示这个文件（同一 mtime）之前已经记过日志：维护模式下不再重复记录，
+# 隔离失败也不再重复告警，但隔离动作照常重试。
 do_quarantine() {
-  local f="$1" src="$2" base dest
+  local f="$1" src="$2" dup="${3:-0}" base dest
   if [ -f "$MAINT" ]; then
-    echo "$(ts) [维护模式-仅记录] 脚本文件变动($src): $f" >> "$ALERT"
+    [ "$dup" = "1" ] || echo "$(ts) [维护模式-仅记录] 脚本文件变动($src): $f" >> "$ALERT"
     return
   fi
   base=$(basename "$f")
@@ -63,6 +67,7 @@ do_quarantine() {
     echo "$(ts) [拦截] 新增脚本已隔离($src): $f -> $dest" >> "$ALERT"
     logger -t suguang-webguard "拦截新增脚本($src) $f -> $dest"
   else
+    [ "$dup" = "1" ] && return
     echo "$(ts) [告警] 发现新增脚本但隔离失败($src): $f" >> "$ALERT"
     logger -t suguang-webguard "发现新增脚本但隔离失败($src) $f"
   fi
@@ -73,25 +78,53 @@ do_quarantine() {
 # 文件要 68 秒，扫描一轮比 SWEEP_INTERVAL 还长，兜底延迟实际是 2 分钟以上。
 # 改为交给 xargs 批量执行 lsattr（同样 4.8 万个文件仅 0.7 秒），先滤掉已加锁的
 # 文件——它们是受保护的原有代码，本来就改不动——剩下的才逐个判断。
+#
+# 日志量控制：解锁后站点里的脚本全都没有 i 属性，原先维护模式下每轮扫描都把
+# 它们全部记一遍「变动」——26 个站约 15 万个文件、每 60 秒一轮，5 天写出 18G
+# 的 alert.log，把磁盘写满并连带 MySQL 停摆。现在：
+#   - 维护模式只看 .maintenance 之后改过的文件（find -newer），没动过的不记；
+#   - 同一文件同一 mtime 只记一次（SEEN 去重），隔离失败的告警同样不重复刷；
+#   - 维护模式单轮最多逐条记 MAINT_LOG_CAP 条，其余汇总成一行。
+# 正常模式下的隔离动作不受去重和上限影响，一个都不会少拦。
+# 注意：读循环必须用 < <(...) 而不是管道，否则 SEEN 在子 shell 里改了也带不回来。
 sweeper() {
-  local s line f
+  local s line f key dup maint last_maint="" n_log n_more
+  local -a newer
+  local -A SEEN=()
   while true; do
     sleep "$SWEEP_INTERVAL"
+    maint=0; [ -f "$MAINT" ] && maint=1
+    # 进出维护模式时清空去重表；表过大时也清空，防止长期运行内存上涨
+    if [ "$maint" != "$last_maint" ] || [ "${#SEEN[@]}" -gt 50000 ]; then
+      SEEN=()
+      last_maint=$maint
+    fi
+    newer=(); [ "$maint" = "1" ] && newer=(-newer "$MAINT")
+    n_log=0; n_more=0
     for s in $WATCH_DIRS; do
       [ -d "$s" ] || continue
-      find "$s" -type f \( -name '*.php' -o -name '*.php5' -o -name '*.php7' \
-             -o -name '*.phtml' -o -name '*.phar' -o -name '*.pht' -o -name '*.phps' \) \
-             -print0 2>/dev/null \
-        | xargs -0 -r lsattr -d 2>/dev/null \
-        | while IFS= read -r line; do
-            # lsattr 输出形如 "----i--------e-- /路径"，第 5 位是 immutable
-            case "$line" in ????i*) continue;; esac
-            f=${line#* }                                   # 去掉属性字段
-            while [ "$f" != "${f# }" ]; do f=${f# }; done   # 去掉多余前导空格
-            [ -n "$f" ] || continue
-            should_quarantine "$f" && do_quarantine "$f" "定期扫描"
-          done
+      while IFS= read -r line; do
+        # lsattr 输出形如 "----i--------e-- /路径"，第 5 位是 immutable
+        case "$line" in ????i*) continue;; esac
+        f=${line#* }                                   # 去掉属性字段
+        while [ "$f" != "${f# }" ]; do f=${f# }; done   # 去掉多余前导空格
+        [ -n "$f" ] || continue
+        should_quarantine "$f" || continue
+        key="$f|$(stat -c %Y "$f" 2>/dev/null)"
+        dup=0; [ -n "${SEEN[$key]}" ] && dup=1
+        SEEN[$key]=1
+        if [ "$maint" = "1" ]; then
+          [ "$dup" = "1" ] && continue
+          if [ "$n_log" -ge "$MAINT_LOG_CAP" ]; then n_more=$((n_more+1)); continue; fi
+          n_log=$((n_log+1))
+        fi
+        do_quarantine "$f" "定期扫描" "$dup"
+      done < <(find "$s" -type f \( -name '*.php' -o -name '*.php5' -o -name '*.php7' \
+                 -o -name '*.phtml' -o -name '*.phar' -o -name '*.pht' -o -name '*.phps' \) \
+                 "${newer[@]}" -print0 2>/dev/null \
+               | xargs -0 -r lsattr -d 2>/dev/null)
     done
+    [ "$n_more" -gt 0 ] && echo "$(ts) [维护模式-仅记录] 本轮另有 $n_more 个脚本文件变动未逐条记录（单轮上限 $MAINT_LOG_CAP 条）" >> "$ALERT"
   done
 }
 
@@ -153,9 +186,16 @@ while true; do
             DEGRADED=0
         }
         : > "$ERRF"
+        # 实时侧同样按「文件+mtime」去重，避免同一次改动被重复记录
+        declare -A RT_SEEN=()
         inotifywait -mrq -e close_write -e moved_to --format '%w%f' $WATCH_DIRS 2>"$ERRF" \
         | while read -r f; do
-            should_quarantine "$f" && do_quarantine "$f" "实时"
+            should_quarantine "$f" || continue
+            [ "${#RT_SEEN[@]}" -gt 50000 ] && RT_SEEN=()
+            key="$f|$(stat -c %Y "$f" 2>/dev/null)"
+            dup=0; [ -n "${RT_SEEN[$key]}" ] && dup=1
+            RT_SEEN[$key]=1
+            do_quarantine "$f" "实时" "$dup"
           done
         rc=${PIPESTATUS[0]}
         # 能走到这里就说明 inotifywait 已经退出，把它临终说的话记下来
