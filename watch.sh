@@ -45,6 +45,10 @@ FUSE_LIMIT=${FUSE_LIMIT:-20}
 # 基线覆盖率阈值（百分比）。低于它就认为加锁基线没建立好。
 BASELINE_MIN=${BASELINE_MIN:-90}
 
+# 「只记录」状态（维护模式 / 基线未就绪 / 熔断）下，单轮定期扫描最多逐条记录
+# 多少个文件，其余汇总成一行。变量名沿用最初只管维护模式时的叫法。
+MAINT_LOG_CAP=${MAINT_LOG_CAP:-200}
+
 # ---------- 单实例保护 ----------
 # 两个守护实例同时跑会互相拆台：.baseline-ok 是进程间共享的判定缓存，
 # 另一个实例（尤其是拿不同 CONF 跑的临时实例）算出的结果会把它删掉，
@@ -198,32 +202,37 @@ batch_begin() {
   return 0
 }
 
+# 当前是否处于「只记录、不移动文件」的状态（三道闸门任一不通过）
+record_only() { [ -f "$MAINT" ] || [ ! -f "$BASEOK" ] || fused; }
+
 # 隔离一个文件。$2 为来源标记（实时 / 定期扫描）
+# $3=1 表示这个文件（同一 mtime）之前已经记过日志：只记录状态下不再重复记，
+# 隔离失败也不再重复告警，但隔离动作照常重试。
 #
 # 路径镜像：/www/wwwroot/a/b.php  ->  $BATCH_DIR/files/www/wwwroot/a/b.php
 # 完整路径就是文件的身份，不同站点的同名文件落在不同子目录，物理上不可能互相覆盖。
 # 恢复时路径自带归属，不需要去翻 alert.log —— manifest 跟着批次目录走，
 # 日志轮转也丢不了。
 do_quarantine() {
-  local f="$1" src="$2" dest sz md5 own perm
+  local f="$1" src="$2" dup="${3:-0}" dest sz md5 own perm
   # 三道闸门在这里统一把关。任何一道不通过就只记录，绝不动文件。
   if [ -f "$MAINT" ]; then
-    echo "$(ts) [维护模式-仅记录] 新增脚本($src): $f" >> "$ALERT"
+    [ "$dup" = "1" ] || echo "$(ts) [维护模式-仅记录] 新增脚本($src): $f" >> "$ALERT"
     return 0
   fi
   if [ ! -f "$BASEOK" ]; then
-    echo "$(ts) [基线未就绪-仅记录] 新增脚本($src): $f" >> "$ALERT"
+    [ "$dup" = "1" ] || echo "$(ts) [基线未就绪-仅记录] 新增脚本($src): $f" >> "$ALERT"
     return 0
   fi
   if fused; then
-    echo "$(ts) [熔断-仅记录] 新增脚本($src): $f" >> "$ALERT"
+    [ "$dup" = "1" ] || echo "$(ts) [熔断-仅记录] 新增脚本($src): $f" >> "$ALERT"
     return 0
   fi
   [ -n "$BATCH_DIR" ] || batch_begin || return 1
 
   dest="$BATCH_DIR/files$f"
   mkdir -p "$(dirname "$dest")" 2>/dev/null || {
-    echo "$(ts) [告警] 无法创建隔离目录，未移动文件($src): $f" >> "$ALERT"
+    [ "$dup" = "1" ] || echo "$(ts) [告警] 无法创建隔离目录，未移动文件($src): $f" >> "$ALERT"
     return 1
   }
   # 元数据必须在 mv 之前采集 —— 文件一旦搬走，原路径上什么都没有了
@@ -243,6 +252,7 @@ do_quarantine() {
     fi
     return 0
   fi
+  [ "$dup" = "1" ] && return 1
   echo "$(ts) [告警] 发现新增脚本但隔离失败($src): $f" >> "$ALERT"
   logger -t suguang-webguard "发现新增脚本但隔离失败($src) $f"
   return 1
@@ -252,8 +262,22 @@ do_quarantine() {
 # 性能要点：不要对每个文件单独 fork lsattr。实测 4.8 万个 php 单独 fork 要 68 秒，
 # 比 SWEEP_INTERVAL 还长；交给 xargs 批量执行只要 0.7 秒。先滤掉已加锁的文件
 # ——它们是受保护的原有代码，本来就改不动——剩下的才逐个判断。
+#
+# 日志量控制：「只记录」状态下（维护模式 / 基线未就绪 / 熔断）全站脚本都可能
+# 没有 +i，原先每轮扫描都把它们全部记一遍。2026-10 一台 26 个站约 15 万个文件
+# 的服务器忘了加锁，5 天写出 18G 的 alert.log，磁盘写满、MySQL 停摆。现在：
+#   - 维护模式只看 .maintenance 之后改过的文件（find -newer），没动过的不记；
+#   - 同一文件同一 mtime 只记一次（SEEN 去重），隔离失败的告警同样不重复刷；
+#   - 只记录状态下单轮最多逐条记 MAINT_LOG_CAP 条，其余汇总成一行。
+# 正常隔离不受去重和上限影响（失败的文件下一轮照常重试），有熔断闸门兜底。
+#
+# 读循环用 < <(...) 而不是管道：管道右侧是子 shell，SEEN 和批次变量在里面改了
+# 带不出来。顺带也让一轮扫描真正只有一个批次、熔断按「整轮」计数，与上面
+# 「每轮一个新批次」的设计一致（管道写法下每个站点各开一个批次、各计各的）。
 sweeper() {
-  local s line f
+  local s line f key dup ro state last_state="" n_log n_more
+  local -a newer
+  local -A SEEN=()
   while true; do
     sleep "$SWEEP_INTERVAL"
 
@@ -277,21 +301,41 @@ sweeper() {
     # 每轮一个新批次：批次即「一次隔离动作」，也是熔断计数的单位
     BATCH_DIR=""; BATCH_ID=""; MANIFEST=""; BATCH_COUNT=0
 
+    # 闸门状态变化（进出维护模式、基线恢复或丢失、熔断）时清空去重表，
+    # 让新状态下的情况重新完整记录一次；表过大时也清空，防止内存上涨
+    state="$([ -f "$MAINT" ] && echo M)$([ -f "$BASEOK" ] || echo B)$(fused && echo F)"
+    if [ "$state" != "$last_state" ] || [ "${#SEEN[@]}" -gt 50000 ]; then
+      SEEN=()
+      last_state=$state
+    fi
+    newer=(); [ -f "$MAINT" ] && newer=(-newer "$MAINT")
+    n_log=0; n_more=0
+
     for s in $WATCH_DIRS; do
       [ -d "$s" ] || continue
-      find "$s" -type f \( -name '*.php' -o -name '*.php5' -o -name '*.php7' \
-             -o -name '*.phtml' -o -name '*.phar' -o -name '*.pht' -o -name '*.phps' \) \
-             -print0 2>/dev/null \
-        | xargs -0 -r lsattr -d 2>/dev/null \
-        | while IFS= read -r line; do
-            # lsattr 输出形如 "----i--------e-- /路径"，第 5 位是 immutable
-            case "$line" in ????i*) continue;; esac
-            f=${line#* }                                   # 去掉属性字段
-            while [ "$f" != "${f# }" ]; do f=${f# }; done   # 去掉多余前导空格
-            [ -n "$f" ] || continue
-            should_quarantine "$f" && do_quarantine "$f" "定期扫描"
-          done
+      while IFS= read -r line; do
+        # lsattr 输出形如 "----i--------e-- /路径"，第 5 位是 immutable
+        case "$line" in ????i*) continue;; esac
+        f=${line#* }                                   # 去掉属性字段
+        while [ "$f" != "${f# }" ]; do f=${f# }; done   # 去掉多余前导空格
+        [ -n "$f" ] || continue
+        should_quarantine "$f" || continue
+        key="$f|$(stat -c %Y "$f" 2>/dev/null)"
+        dup=0; [ -n "${SEEN[$key]}" ] && dup=1
+        SEEN[$key]=1
+        ro=0; record_only && ro=1
+        if [ "$ro" = "1" ]; then
+          [ "$dup" = "1" ] && continue
+          if [ "$n_log" -ge "$MAINT_LOG_CAP" ]; then n_more=$((n_more + 1)); continue; fi
+          n_log=$((n_log + 1))
+        fi
+        do_quarantine "$f" "定期扫描" "$dup"
+      done < <(find "$s" -type f \( -name '*.php' -o -name '*.php5' -o -name '*.php7' \
+                 -o -name '*.phtml' -o -name '*.phar' -o -name '*.pht' -o -name '*.phps' \) \
+                 "${newer[@]}" -print0 2>/dev/null \
+               | xargs -0 -r lsattr -d 2>/dev/null)
     done
+    [ "$n_more" -gt 0 ] && echo "$(ts) [仅记录] 本轮另有 $n_more 个新增脚本未逐条记录（单轮上限 $MAINT_LOG_CAP 条，同一文件不重复记录）" >> "$ALERT"
   done
 }
 
@@ -375,9 +419,16 @@ while true; do
         # 实时路径自己维护一个批次。它是长驻的，不像 sweeper 每轮重开，
         # 所以熔断计数在这里是「累计」语义 —— 达到阈值同样停手。
         BATCH_DIR=""; BATCH_ID=""; MANIFEST=""; BATCH_COUNT=0
+        # 实时侧同样按「文件+mtime」去重，同一次改动不重复记录
+        declare -A RT_SEEN=()
         inotifywait -mrq -e close_write -e moved_to --format '%w%f' $WATCH_DIRS 2>"$ERRF" \
         | while read -r f; do
-            should_quarantine "$f" && do_quarantine "$f" "实时"
+            should_quarantine "$f" || continue
+            [ "${#RT_SEEN[@]}" -gt 50000 ] && RT_SEEN=()
+            key="$f|$(stat -c %Y "$f" 2>/dev/null)"
+            dup=0; [ -n "${RT_SEEN[$key]}" ] && dup=1
+            RT_SEEN[$key]=1
+            do_quarantine "$f" "实时" "$dup"
           done
         rc=${PIPESTATUS[0]}
         # 能走到这里就说明 inotifywait 已经退出，把它临终说的话记下来
